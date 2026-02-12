@@ -15,12 +15,6 @@ services:
       - audio-bot-net
     ports:
       - "8081:8081"
-    healthcheck:
-      test: ["CMD-SHELL", "netstat -an | grep -q 8081 || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 60s
 
   telegram-audio-bot:
     build:
@@ -30,8 +24,7 @@ services:
     container_name: telegram-audio-bot-pro
     restart: unless-stopped
     depends_on:
-      telegram-bot-api:
-        condition: service_healthy
+      - telegram-bot-api
 
     deploy:
       resources:

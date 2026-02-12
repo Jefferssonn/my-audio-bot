@@ -39,5 +39,5 @@ RUN mkdir -p /app/temp /app/logs && \
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD ps aux | grep -q '[p]ython.*bot.py' || exit 1
 
-# Запуск бота
-CMD ["python", "-u", "bot.py"]
+# Запуск бота с ожиданием Bot API Server
+CMD ["sh", "-c", "sleep 10 && python -u bot.py"]
