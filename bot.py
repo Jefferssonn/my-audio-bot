@@ -299,7 +299,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = f'''
 🎵 *Привет, {user_name}!*
 
-Добро пожаловать в *Telegram Audio Bot PRO v2.2* 🎧
+Добро пожаловать в *Telegram Audio Bot PRO v2.3* 🎧
 
 ━━━━━━━━━━━━━━━━━━━━━━
 ✨ *Возможности бота:*
@@ -372,7 +372,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if act == 'help':
-        txt = '''📚 *Справка по боту v2.2*
+        txt = '''📚 *Справка по боту v2.3*
 
 ━━━━━━━━━━━━━━━━━━
 🎯 *ОСНОВНЫЕ ФУНКЦИИ:*
@@ -821,8 +821,8 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             await update.message.reply_text('📤 Отправка...')
             with open(outp, 'rb') as f:
-                await update.message.reply_audio(audio=f, filename=os.path.splitext(fname)[0]+f'_[PRO-v2.2].{fmt}',
-                    caption=f'✅ *PRO v2.2!*\n\n📊 Качество: {before["quality"]}% → {after["quality"]}%\n🎵 {"Моно" if before["is_mono"] else "Стерeo"} → Стерео\n🎚 Динамика: {before["dynamic_range"]:.1f} → {after["dynamic_range"]:.1f} dB\n🔉 LUFS: {before["lufs"]} → {after["lufs"]}\n💾 Формат: {fmt.upper()}\n\n✨ Мягкая компрессия 2:1',
+                await update.message.reply_audio(audio=f, filename=os.path.splitext(fname)[0]+f'_[PRO-v2.3].{fmt}',
+                    caption=f'✅ *PRO v2.3!*\n\n📊 Качество: {before["quality"]}% → {after["quality"]}%\n🎵 {"Моно" if before["is_mono"] else "Стерeo"} → Стерео\n🎚 Динамика: {before["dynamic_range"]:.1f} → {after["dynamic_range"]:.1f} dB\n🔉 LUFS: {before["lufs"]} → {after["lufs"]}\n💾 Формат: {fmt.upper()}\n\n✨ Мягкая компрессия 2:1',
                     parse_mode='Markdown', read_timeout=180, write_timeout=180)
 
             await update.message.reply_text('✅ Готово!')
@@ -859,9 +859,9 @@ def main():
     app.add_handler(MessageHandler(filters.AUDIO | filters.VOICE | filters.Document.AUDIO, handle_audio))
 
     logger.info('='*50)
-    logger.info('🚀 Telegram Audio Bot PRO v2.2')
+    logger.info('🚀 Telegram Audio Bot PRO v2.3')
     logger.info('='*50)
-    logger.info('✨ Версия: 2.2 (Soft Compression)')
+    logger.info('✨ Версия: 2.3 (Format Selection)')
     logger.info(f'📦 Макс. размер файла: {MAX_FILE_SIZE_MB} МБ')
     logger.info(f'🧹 Автоочистка: каждые {CLEANUP_INTERVAL_MINUTES} мин')
     logger.info(f'⏰ Макс. возраст файлов: {TEMP_FILE_MAX_AGE_HOURS} ч')

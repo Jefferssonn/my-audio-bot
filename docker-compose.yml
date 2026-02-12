@@ -5,7 +5,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: telegram-audio-bot:2.2
+    image: telegram-audio-bot:2.3
     container_name: telegram-audio-bot-pro
     restart: unless-stopped
 
