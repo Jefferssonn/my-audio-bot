@@ -13,9 +13,7 @@ logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s
 logger = logging.getLogger(__name__)
 
 BOT_TOKEN = os.getenv('BOT_TOKEN')
-USE_LOCAL_API = os.getenv('USE_LOCAL_API', 'false').lower() == 'true'
-LOCAL_API_URL = os.getenv('LOCAL_API_URL', 'http://telegram-bot-api:8081')
-MAX_FILE_SIZE_MB = int(os.getenv('MAX_FILE_SIZE_MB', 2000 if USE_LOCAL_API else 100))
+MAX_FILE_SIZE_MB = int(os.getenv('MAX_FILE_SIZE_MB', 20))
 CLEANUP_INTERVAL_MINUTES = int(os.getenv('CLEANUP_INTERVAL_MINUTES', 30))
 TEMP_FILE_MAX_AGE_HOURS = int(os.getenv('TEMP_FILE_MAX_AGE_HOURS', 2))
 
@@ -301,7 +299,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = f'''
 🎵 *Привет, {user_name}!*
 
-Добро пожаловать в *Telegram Audio Bot PRO v2.5* 🎧
+Добро пожаловать в *Telegram Audio Bot PRO v2.6* 🎧
 
 ━━━━━━━━━━━━━━━━━━━━━━
 ✨ *Возможности бота:*
@@ -374,7 +372,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if act == 'help':
-        txt = '''📚 *Справка по боту v2.5*
+        txt = '''📚 *Справка по боту v2.6*
 
 ━━━━━━━━━━━━━━━━━━
 🎯 *ОСНОВНЫЕ ФУНКЦИИ:*
@@ -667,29 +665,18 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     fsize_mb = fsize / (1024*1024) if fsize else 0
 
-    # Проверка размера файла в зависимости от режима
-    if not USE_LOCAL_API:
-        # Стандартный Telegram Bot API: лимит 20 MB
-        if fsize_mb > TELEGRAM_MAX_FILE_SIZE:
-            await update.message.reply_text(
-                f'❌ *Файл слишком большой: {fsize_mb:.1f} МБ*\n\n'
-                f'Telegram Bot API ограничение: *{TELEGRAM_MAX_FILE_SIZE} МБ*\n\n'
-                f'💡 Попробуйте:\n'
-                f'• Сжать файл до {TELEGRAM_MAX_FILE_SIZE} МБ\n'
-                f'• Отправить более короткий фрагмент\n'
-                f'• Использовать формат с меньшим битрейтом',
-                parse_mode='Markdown'
-            )
-            return
-    else:
-        # Local Bot API: лимит до MAX_FILE_SIZE_MB (2000 MB по умолчанию)
-        if fsize_mb > MAX_FILE_SIZE_MB:
-            await update.message.reply_text(
-                f'❌ *Файл слишком большой: {fsize_mb:.1f} МБ*\n\n'
-                f'Максимальный размер: *{MAX_FILE_SIZE_MB} МБ*',
-                parse_mode='Markdown'
-            )
-            return
+    # Проверка размера файла (Telegram Bot API лимит: 20 MB)
+    if fsize_mb > TELEGRAM_MAX_FILE_SIZE:
+        await update.message.reply_text(
+            f'❌ *Файл слишком большой: {fsize_mb:.1f} МБ*\n\n'
+            f'Telegram Bot API ограничение: *{TELEGRAM_MAX_FILE_SIZE} МБ*\n\n'
+            f'💡 Попробуйте:\n'
+            f'• Сжать файл до {TELEGRAM_MAX_FILE_SIZE} МБ\n'
+            f'• Отправить более короткий фрагмент\n'
+            f'• Использовать формат с меньшим битрейтом',
+            parse_mode='Markdown'
+        )
+        return
 
     # Получение файла с обработкой ошибок
     try:
@@ -862,8 +849,8 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             await update.message.reply_text('📤 Отправка...')
             with open(outp, 'rb') as f:
-                await update.message.reply_audio(audio=f, filename=os.path.splitext(fname)[0]+f'_[PRO-v2.5].{fmt}',
-                    caption=f'✅ *PRO v2.5!*\n\n📊 Качество: {before["quality"]}% → {after["quality"]}%\n🎵 {"Моно" if before["is_mono"] else "Стерeo"} → Стерео\n🎚 Динамика: {before["dynamic_range"]:.1f} → {after["dynamic_range"]:.1f} dB\n🔉 LUFS: {before["lufs"]} → {after["lufs"]}\n💾 Формат: {fmt.upper()}\n\n✨ Мягкая компрессия 2:1',
+                await update.message.reply_audio(audio=f, filename=os.path.splitext(fname)[0]+f'_[PRO-v2.6].{fmt}',
+                    caption=f'✅ *PRO v2.6!*\n\n📊 Качество: {before["quality"]}% → {after["quality"]}%\n🎵 {"Моно" if before["is_mono"] else "Стерeo"} → Стерео\n🎚 Динамика: {before["dynamic_range"]:.1f} → {after["dynamic_range"]:.1f} dB\n🔉 LUFS: {before["lufs"]} → {after["lufs"]}\n💾 Формат: {fmt.upper()}\n\n✨ Мягкая компрессия 2:1',
                     parse_mode='Markdown', read_timeout=180, write_timeout=180)
 
             await update.message.reply_text('✅ Готово!')
@@ -894,24 +881,17 @@ def main():
 
     FileManager.start_cleanup_scheduler()
 
-    # Настройка Application с Local Bot API Server если включен
-    builder = Application.builder().token(BOT_TOKEN)
-    if USE_LOCAL_API:
-        builder.base_url(f'{LOCAL_API_URL}/bot')
-        builder.base_file_url(f'{LOCAL_API_URL}/file/bot')
-    app = builder.build()
+    # Настройка Application
+    app = Application.builder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler('start', start))
     app.add_handler(CallbackQueryHandler(button_callback))
     app.add_handler(MessageHandler(filters.AUDIO | filters.VOICE | filters.Document.AUDIO, handle_audio))
 
     logger.info('='*50)
-    logger.info('🚀 Telegram Audio Bot PRO v2.5')
+    logger.info('🚀 Telegram Audio Bot PRO v2.6')
     logger.info('='*50)
-    logger.info('✨ Версия: 2.5 (Local Bot API)')
-    logger.info(f'🌐 Local API: {"✅ Включен" if USE_LOCAL_API else "❌ Выключен"}')
-    if USE_LOCAL_API:
-        logger.info(f'🔗 API URL: {LOCAL_API_URL}')
+    logger.info('✨ Версия: 2.6 (Stable)')
     logger.info(f'📦 Макс. размер файла: {MAX_FILE_SIZE_MB} МБ')
     logger.info(f'🧹 Автоочистка: каждые {CLEANUP_INTERVAL_MINUTES} мин')
     logger.info(f'⏰ Макс. возраст файлов: {TEMP_FILE_MAX_AGE_HOURS} ч')

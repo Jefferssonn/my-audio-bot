@@ -1,7 +1,7 @@
 @echo off
 chcp 65001 >nul
 echo ========================================
-echo 🚀 Запуск Telegram Audio Bot PRO v2.5
+echo 🚀 Запуск Telegram Audio Bot PRO v2.6
 echo ========================================
 echo.
 
