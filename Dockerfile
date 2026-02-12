@@ -2,8 +2,8 @@ FROM python:3.11-slim
 
 # Метаданные
 LABEL maintainer="Audio Bot Developer"
-LABEL version="2.7"
-LABEL description="Telegram Audio Bot PRO v2.7 - FFmpeg Streaming"
+LABEL version="2.7.4"
+LABEL description="Telegram Audio Bot PRO v2.7.4 - Improved UX + FFmpeg Streaming"
 
 # Установка переменных окружения
 ENV PYTHONUNBUFFERED=1 \

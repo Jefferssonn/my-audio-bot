@@ -1,7 +1,7 @@
 #!/bin/bash
 
 echo "========================================"
-echo "🚀 Запуск Telegram Audio Bot PRO v2.7"
+echo "🚀 Запуск Telegram Audio Bot PRO v2.7.4"
 echo "========================================"
 echo ""
 
