@@ -15,7 +15,7 @@ services:
           memory: 2G
           cpus: '2'
         reservations:
-          memory: 512M
+          memory: 1G
 
     environment:
       - BOT_TOKEN=${BOT_TOKEN}
