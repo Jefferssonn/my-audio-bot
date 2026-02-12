@@ -20,8 +20,12 @@ user_data = {}
 user_stats = {}
 
 class FileManager:
+    TEMP_DIR = os.getenv('TEMP_DIR', '/app/temp')
+
     @staticmethod
-    def cleanup_old_files(directory='/app/temp', max_age_hours=2):
+    def cleanup_old_files(directory=None, max_age_hours=2):
+        if directory is None:
+            directory = FileManager.TEMP_DIR
         try:
             now = time.time()
             cleaned = total_size = 0
@@ -35,7 +39,8 @@ class FileManager:
                             os.remove(filepath)
                             cleaned += 1
                             total_size += file_size
-                        except: pass
+                        except OSError:
+                            pass
             if cleaned > 0:
                 logger.info(f'🧹 Очищено: {cleaned} файлов, {total_size/(1024*1024):.1f} МБ')
         except Exception as e:
@@ -52,7 +57,7 @@ class FileManager:
 
     @staticmethod
     def get_safe_path(user_id, prefix='in', ext=''):
-        return f'/app/temp/{prefix}_{user_id}_{int(time.time())}{ext}'
+        return os.path.join(FileManager.TEMP_DIR, f'{prefix}_{user_id}_{int(time.time())}{ext}')
 
 class RateLimiter:
     def __init__(self, max_req=5, window=60):
@@ -652,9 +657,8 @@ Lossless качество для максимального результата
 
         # ВАЖНО: импортируем process_file или создаем его inline
         # Сейчас вызовем обработку напрямую
+        outp = None
         try:
-            outp = None
-
             if act == 'analyze':
                 audio = AudioSegment.from_file(inp)
                 s = AudioProcessor.analyze_audio(audio)
@@ -692,8 +696,14 @@ Lossless качество для максимального результата
 
             elif act.startswith('enhance_'):
                 parts = act.split('_')
+                if len(parts) < 3:
+                    await q.message.reply_text('❌ Неправильный формат команды')
+                    return
                 lvl, fmt = parts[1], parts[2]
                 ratio_map = {'light': '1.5:1', 'medium': '2.0:1', 'heavy': '3.0:1'}
+                if lvl not in ratio_map:
+                    await q.message.reply_text('❌ Неизвестный уровень компрессии')
+                    return
                 outp = FileManager.get_safe_path(uid, 'out', f'.{fmt}')
                 success = FFmpegProcessor.process_audio(inp, outp, fmt, level=lvl, normalize=True, mono_to_stereo=False)
                 if success:
@@ -714,22 +724,21 @@ Lossless качество для максимального результата
                     await q.message.reply_text('❌ Ошибка конвертации')
 
             elif act.startswith('full_process_'):
-                fmt = act.split('_')[2]
-                dur = info['duration']
+                parts = act.split('_')
+                if len(parts) < 3:
+                    await q.message.reply_text('❌ Неправильный формат команды')
+                    return
+                fmt = parts[2]
+                dur = info.get('duration', 0)
                 outp = FileManager.get_safe_path(uid, 'out', f'.{fmt}')
-                success = FFmpegProcessor.process_audio(inp, outp, fmt, level='medium', normalize=True, mono_to_stereo=info['is_mono'])
+                success = FFmpegProcessor.process_audio(inp, outp, fmt, level='medium', normalize=True, mono_to_stereo=info.get('is_mono', False))
                 if success:
                     with open(outp, 'rb') as f:
                         await q.message.reply_audio(audio=f, filename=os.path.splitext(fname)[0]+f'_[PRO-v2.7].{fmt}',
-                            caption=f'✅ *PRO v2.7 - FFmpeg Streaming!*\n\n🎵 {"Моно → Стерео" if info["is_mono"] else "Стерео"}\n🎚 Компрессия: 2.0:1\n🔉 Нормализация: -16 LUFS\n💾 Формат: {fmt.upper()}\n⏱ Длина: {dur/60:.1f} мин\n\n⚡ Обработано через FFmpeg streaming',
+                            caption=f'✅ *PRO v2.7 - FFmpeg Streaming!*\n\n🎵 {"Моно → Стерео" if info.get("is_mono", False) else "Стерео"}\n🎚 Компрессия: 2.0:1\n🔉 Нормализация: -16 LUFS\n💾 Формат: {fmt.upper()}\n⏱ Длина: {dur/60:.1f} мин\n\n⚡ Обработано через FFmpeg streaming',
                             parse_mode='Markdown', read_timeout=180, write_timeout=180)
                 else:
                     await q.message.reply_text('❌ Ошибка обработки')
-
-            # Cleanup output file
-            if outp and os.path.exists(outp):
-                try: os.remove(outp)
-                except: pass
 
             # Показываем меню снова
             kb = [
@@ -744,6 +753,14 @@ Lossless качество для максимального результата
         except Exception as e:
             logger.error(f'Ошибка обработки: {e}', exc_info=True)
             await q.message.reply_text(f'❌ Ошибка: {str(e)}')
+        finally:
+            # Cleanup output file ВСЕГДА
+            if outp and os.path.exists(outp):
+                try:
+                    os.remove(outp)
+                    logger.info(f'Удален временный файл: {outp}')
+                except OSError as e:
+                    logger.warning(f'Не удалось удалить {outp}: {e}')
 
     else:
         # Нет файла - показываем сообщение о загрузке
@@ -846,8 +863,9 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if old_file and os.path.exists(old_file):
                 try:
                     os.remove(old_file)
-                except:
-                    pass
+                    logger.info(f'Удален старый файл: {old_file}')
+                except OSError as e:
+                    logger.warning(f'Не удалось удалить старый файл: {e}')
 
         # Сохраняем новый файл
         inp = FileManager.get_safe_path(uid, 'saved')
@@ -902,8 +920,11 @@ def main():
         logger.error('❌ BOT_TOKEN не установлен!')
         return
 
-    os.makedirs('/app/temp', exist_ok=True)
-    os.makedirs('/app/logs', exist_ok=True)
+    # Создаем директории для временных файлов и логов
+    temp_dir = os.getenv('TEMP_DIR', '/app/temp')
+    logs_dir = os.getenv('LOGS_DIR', '/app/logs')
+    os.makedirs(temp_dir, exist_ok=True)
+    os.makedirs(logs_dir, exist_ok=True)
 
     FileManager.start_cleanup_scheduler()
 
