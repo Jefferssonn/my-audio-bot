@@ -1,14 +1,13 @@
-import os, logging, time, threading, io
+import os, logging, time, threading, io, signal
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
 import numpy as np
 from pydub import AudioSegment
-from pydub.effects import normalize, compress_dynamic_range
+from pydub.effects import compress_dynamic_range
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-from scipy import signal
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO, handlers=[logging.StreamHandler(), logging.FileHandler('/app/logs/bot.log', encoding='utf-8')])
 logger = logging.getLogger(__name__)
@@ -442,7 +441,7 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
             norm.export(outp, format='flac', parameters=["-compression_level", "8"])
 
             with open(outp, 'rb') as f:
-                await update.message.reply_audio(audio=f, filename=fname.rsplit('.', 1)[0]+'_NORM.flac', caption=f'🔊 *Нормализовано*\n\n📉 До: {before["lufs"]} LUFS\n📈 После: {after["lufs"]} LUFS', parse_mode='Markdown')
+                await update.message.reply_audio(audio=f, filename=os.path.splitext(fname)[0]+'_NORM.flac', caption=f'🔊 *Нормализовано*\n\n📉 До: {before["lufs"]} LUFS\n📈 После: {after["lufs"]} LUFS', parse_mode='Markdown')
 
         elif act == 'mono_to_stereo':
             if audio.channels == 1:
@@ -471,7 +470,7 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ratio_map = {'light': '1.5:1', 'medium': '2.0:1', 'heavy': '3.0:1'}
 
             with open(outp, 'rb') as f:
-                await update.message.reply_audio(audio=f, filename=fname.rsplit('.', 1)[0]+f'_[{lvl.upper()}].flac',
+                await update.message.reply_audio(audio=f, filename=os.path.splitext(fname)[0]+f'_[{lvl.upper()}].flac',
                     caption=f'✅ *Улучшено ({ratio_map[lvl]})*\n\n📊 Качество: {before["quality"]}% → {after["quality"]}%\n🎚 Динамика: {before["dynamic_range"]:.1f} → {after["dynamic_range"]:.1f} dB\n🔉 LUFS: {before["lufs"]} → {after["lufs"]}',
                     parse_mode='Markdown')
 
@@ -491,7 +490,7 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 audio.export(outp, format='flac', parameters=["-compression_level", "8"])
 
             with open(outp, 'rb') as f:
-                await update.message.reply_audio(audio=f, filename=fname.rsplit('.', 1)[0]+f'.{fmt}', caption=f'💾 *{fmt.upper()}*', parse_mode='Markdown')
+                await update.message.reply_audio(audio=f, filename=os.path.splitext(fname)[0]+f'.{fmt}', caption=f'💾 *{fmt.upper()}*', parse_mode='Markdown')
 
         elif act == 'full_process':
             if dur > 300:
@@ -528,8 +527,8 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             await update.message.reply_text('📤 Отправка...')
             with open(outp, 'rb') as f:
-                await update.message.reply_audio(audio=f, filename=fname.rsplit('.', 1)[0]+'_[PRO-v2.2].flac',
-                    caption=f'✅ *PRO v2.2!*\n\n📊 Качество: {before["quality"]}% → {after["quality"]}%\n🎵 {"Моно" if before["is_mono"] else "Стерео"} → Стерео\n🎚 Динамика: {before["dynamic_range"]:.1f} → {after["dynamic_range"]:.1f} dB\n🔉 LUFS: {before["lufs"]} → {after["lufs"]}\n\n✨ Мягкая компрессия 2:1',
+                await update.message.reply_audio(audio=f, filename=os.path.splitext(fname)[0]+'_[PRO-v2.2].flac',
+                    caption=f'✅ *PRO v2.2!*\n\n📊 Качество: {before["quality"]}% → {after["quality"]}%\n🎵 {"Моно" if before["is_mono"] else "Стерeo"} → Стерео\n🎚 Динамика: {before["dynamic_range"]:.1f} → {after["dynamic_range"]:.1f} dB\n🔉 LUFS: {before["lufs"]} → {after["lufs"]}\n\n✨ Мягкая компрессия 2:1',
                     parse_mode='Markdown', read_timeout=180, write_timeout=180)
 
             await update.message.reply_text('✅ Готово!')
@@ -565,10 +564,34 @@ def main():
     app.add_handler(CallbackQueryHandler(button_callback))
     app.add_handler(MessageHandler(filters.AUDIO | filters.VOICE | filters.Document.AUDIO, handle_audio))
 
-    logger.info('🚀 Бот PRO v2.2 запущен! (SOFT Compression)')
-    logger.info(f'⚙️  Макс. размер: {MAX_FILE_SIZE_MB} МБ')
+    logger.info('='*50)
+    logger.info('🚀 Telegram Audio Bot PRO v2.2')
+    logger.info('='*50)
+    logger.info('✨ Версия: 2.2 (Soft Compression)')
+    logger.info(f'📦 Макс. размер файла: {MAX_FILE_SIZE_MB} МБ')
+    logger.info(f'🧹 Автоочистка: каждые {CLEANUP_INTERVAL_MINUTES} мин')
+    logger.info(f'⏰ Макс. возраст файлов: {TEMP_FILE_MAX_AGE_HOURS} ч')
+    logger.info('🎚️ Компрессия: 1.5:1 / 2.0:1 / 3.0:1')
+    logger.info('🔊 Нормализация: -16 LUFS')
+    logger.info('='*50)
 
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+    # Graceful shutdown handler
+    def signal_handler(signum, frame):
+        logger.info('⚠️ Получен сигнал остановки, завершаю работу...')
+        app.stop()
+        logger.info('✅ Бот остановлен корректно')
+
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+
+    try:
+        app.run_polling(allowed_updates=Update.ALL_TYPES)
+    except KeyboardInterrupt:
+        logger.info('⚠️ Остановка по KeyboardInterrupt')
+    except Exception as e:
+        logger.error(f'❌ Критическая ошибка: {e}', exc_info=True)
+    finally:
+        logger.info('👋 Завершение работы бота')
 
 if __name__ == '__main__':
     main()
