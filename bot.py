@@ -133,7 +133,7 @@ class FFmpegProcessor:
             return None
 
     @staticmethod
-    def process_audio(input_path, output_path, output_format='flac', level='medium', normalize=True, mono_to_stereo=False):
+    async def process_audio(input_path, output_path, output_format='flac', level='medium', normalize=True, mono_to_stereo=False, progress_callback=None, duration=0):
         """
         Обработка аудио через FFmpeg streaming - БЕЗ загрузки в RAM
 
@@ -144,6 +144,8 @@ class FFmpegProcessor:
             level: уровень компрессии (light/medium/heavy)
             normalize: применять loudnorm
             mono_to_stereo: конвертировать моно в стерео
+            progress_callback: async функция для обновления прогресса
+            duration: длительность файла в секундах (для расчета прогресса)
         """
 
         # Параметры компрессии для разных уровней
@@ -178,40 +180,74 @@ class FFmpegProcessor:
             'wav': ['-c:a', 'pcm_s16le']
         }
 
-        # Команда ffmpeg
+        # Команда ffmpeg с прогрессом
         cmd = [
             'ffmpeg', '-y', '-i', input_path,
             '-af', filter_complex,
             *codec_params.get(output_format, codec_params['flac']),
             '-ar', '48000',  # 48kHz sample rate
+            '-progress', 'pipe:1',  # Вывод прогресса в stdout
             output_path
         ]
 
         logger.info(f'FFmpeg фильтр: {filter_complex}')
 
         try:
-            # Запускаем ffmpeg (работает через stream, почти не жрёт RAM)
-            result = subprocess.run(
+            # Запускаем ffmpeg с отслеживанием прогресса
+            process = subprocess.Popen(
                 cmd,
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
-                timeout=600,  # 10 минут макс
-                check=True
+                bufsize=1
             )
-            logger.info(f'✓ FFmpeg обработка завершена: {output_format}')
-            return True
+
+            last_update = time.time()
+            current_time = 0
+
+            # Читаем вывод построчно
+            if process.stdout:
+                for line in process.stdout:
+                    line = line.strip()
+
+                    # Парсим время обработки
+                    if line.startswith('out_time_ms='):
+                        try:
+                            time_ms = int(line.split('=')[1])
+                            current_time = time_ms / 1_000_000  # микросекунды -> секунды
+
+                            # Обновляем прогресс не чаще раза в 2 секунды
+                            if progress_callback and duration > 0 and (time.time() - last_update) > 2:
+                                progress = min(int((current_time / duration) * 100), 99)
+                                await progress_callback(progress)
+                                last_update = time.time()
+                        except (ValueError, IndexError):
+                            pass
+
+            # Ждем завершения
+            return_code = process.wait(timeout=600)
+
+            if return_code == 0:
+                if progress_callback:
+                    await progress_callback(100)  # Завершено
+                logger.info(f'✓ FFmpeg обработка завершена: {output_format}')
+                return True
+            else:
+                stderr = process.stderr.read() if process.stderr else ''
+                logger.error(f'FFmpeg ошибка (код {return_code}): {stderr}')
+                return False
+
         except subprocess.TimeoutExpired:
             logger.error('FFmpeg timeout (>10 мин)')
-            return False
-        except subprocess.CalledProcessError as e:
-            logger.error(f'FFmpeg ошибка: {e.stderr}')
+            if process:
+                process.kill()
             return False
         except Exception as e:
             logger.error(f'FFmpeg exception: {e}')
             return False
 
     @staticmethod
-    def convert_format(input_path, output_path, output_format='flac'):
+    async def convert_format(input_path, output_path, output_format='flac', progress_callback=None, duration=0):
         """Простая конвертация формата без обработки"""
         codec_params = {
             'flac': ['-c:a', 'flac', '-compression_level', '5'],
@@ -223,13 +259,54 @@ class FFmpegProcessor:
         cmd = [
             'ffmpeg', '-y', '-i', input_path,
             *codec_params.get(output_format, codec_params['flac']),
+            '-progress', 'pipe:1',
             output_path
         ]
 
         try:
-            subprocess.run(cmd, capture_output=True, check=True, timeout=300)
-            logger.info(f'✓ Конвертация в {output_format} завершена')
-            return True
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=1
+            )
+
+            last_update = time.time()
+
+            # Читаем вывод для прогресса
+            if process.stdout:
+                for line in process.stdout:
+                    line = line.strip()
+
+                    if line.startswith('out_time_ms='):
+                        try:
+                            time_ms = int(line.split('=')[1])
+                            current_time = time_ms / 1_000_000
+
+                            if progress_callback and duration > 0 and (time.time() - last_update) > 2:
+                                progress = min(int((current_time / duration) * 100), 99)
+                                await progress_callback(progress)
+                                last_update = time.time()
+                        except (ValueError, IndexError):
+                            pass
+
+            return_code = process.wait(timeout=300)
+
+            if return_code == 0:
+                if progress_callback:
+                    await progress_callback(100)
+                logger.info(f'✓ Конвертация в {output_format} завершена')
+                return True
+            else:
+                logger.error(f'Ошибка конвертации (код {return_code})')
+                return False
+
+        except subprocess.TimeoutExpired:
+            if process:
+                process.kill()
+            logger.error('Timeout при конвертации')
+            return False
         except Exception as e:
             logger.error(f'Ошибка конвертации: {e}')
             return False
@@ -304,6 +381,12 @@ class AudioProcessor:
         plt.close()
         return buf
 
+def create_progress_bar(percent):
+    """Создает визуальную шкалу прогресса"""
+    filled = int(percent / 10)  # 10 блоков = 100%
+    bar = '█' * filled + '░' * (10 - filled)
+    return f'[{bar}] {percent}%'
+
 def update_stats(uid, action):
     if uid not in user_stats: user_stats[uid] = {'total': 0, 'last': None, 'actions': {}}
     user_stats[uid]['total'] += 1
@@ -348,7 +431,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = f'''
 🎵 *Привет, {user_name}!*
 
-Добро пожаловать в *Telegram Audio Bot PRO v2.7.4* 🎧
+Добро пожаловать в *Telegram Audio Bot PRO v2.7.5* 🎧
 
 ━━━━━━━━━━━━━━━━━━━━━━
 ✨ *Возможности бота:*
@@ -369,8 +452,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 • Конвертация форматов
 
 ━━━━━━━━━━━━━━━━━━━━━━
-⚡ *НОВОЕ в v2.7.4:*
-✅ Улучшенная UX: выберите действие → отправьте файл → результат!
+⚡ *НОВОЕ в v2.7.5:*
+✅ Шкала прогресса в реальном времени! [████░░] 40%
+✅ Улучшенная UX: действие → файл → результат
 ✅ FFmpeg streaming - файлы ЛЮБОЙ длины без OOM
 ✅ Минимальное потребление RAM
 
@@ -393,7 +477,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
 
-async def execute_audio_action(act, uid, inp, fname, fsize_mb, info, message):
+async def execute_audio_action(act, uid, inp, fname, fsize_mb, info, message, progress_message=None):
     """
     Выполняет обработку аудио по заданному действию
 
@@ -405,8 +489,23 @@ async def execute_audio_action(act, uid, inp, fname, fsize_mb, info, message):
         fsize_mb: размер в МБ
         info: информация о файле из ffprobe
         message: telegram message для отправки ответа
+        progress_message: сообщение для обновления прогресса
     """
     outp = None
+    duration = info.get('duration', 0)
+
+    # Callback для обновления прогресса
+    async def update_progress(percent):
+        if progress_message and percent < 100:
+            try:
+                bar = create_progress_bar(percent)
+                await progress_message.edit_text(
+                    f'⏳ *Обработка...*\n\n{bar}',
+                    parse_mode='Markdown'
+                )
+            except Exception as e:
+                logger.debug(f'Не удалось обновить прогресс: {e}')
+
     try:
         if act == 'analyze':
             audio = AudioSegment.from_file(inp)
@@ -423,7 +522,7 @@ async def execute_audio_action(act, uid, inp, fname, fsize_mb, info, message):
         elif act.startswith('normalize_'):
             fmt = act.split('_')[1]
             outp = FileManager.get_safe_path(uid, 'out', f'.{fmt}')
-            success = FFmpegProcessor.process_audio(inp, outp, fmt, level=None, normalize=True, mono_to_stereo=False)
+            success = await FFmpegProcessor.process_audio(inp, outp, fmt, level=None, normalize=True, mono_to_stereo=False, progress_callback=update_progress, duration=duration)
             if success:
                 with open(outp, 'rb') as f:
                     await message.reply_audio(audio=f, filename=os.path.splitext(fname)[0]+f'_NORM.{fmt}',
@@ -434,7 +533,7 @@ async def execute_audio_action(act, uid, inp, fname, fsize_mb, info, message):
         elif act == 'mono_to_stereo':
             if info.get('is_mono', False):
                 outp = FileManager.get_safe_path(uid, 'out', '.flac')
-                success = FFmpegProcessor.process_audio(inp, outp, 'flac', level=None, normalize=False, mono_to_stereo=True)
+                success = await FFmpegProcessor.process_audio(inp, outp, 'flac', level=None, normalize=False, mono_to_stereo=True, progress_callback=update_progress, duration=duration)
                 if success:
                     with open(outp, 'rb') as f:
                         await message.reply_audio(audio=f, filename=os.path.splitext(fname)[0]+'_STEREO.flac', caption='✅ Моно → Стерео')
@@ -453,7 +552,7 @@ async def execute_audio_action(act, uid, inp, fname, fsize_mb, info, message):
                 await message.reply_text('❌ Неизвестный уровень компрессии')
                 return
             outp = FileManager.get_safe_path(uid, 'out', f'.{fmt}')
-            success = FFmpegProcessor.process_audio(inp, outp, fmt, level=lvl, normalize=True, mono_to_stereo=False)
+            success = await FFmpegProcessor.process_audio(inp, outp, fmt, level=lvl, normalize=True, mono_to_stereo=False, progress_callback=update_progress, duration=duration)
             if success:
                 with open(outp, 'rb') as f:
                     await message.reply_audio(audio=f, filename=os.path.splitext(fname)[0]+f'_[{lvl.upper()}].{fmt}',
@@ -464,7 +563,7 @@ async def execute_audio_action(act, uid, inp, fname, fsize_mb, info, message):
         elif act.startswith('convert_'):
             fmt = act.split('_')[1]
             outp = FileManager.get_safe_path(uid, 'out', f'.{fmt}')
-            success = FFmpegProcessor.convert_format(inp, outp, fmt)
+            success = await FFmpegProcessor.convert_format(inp, outp, fmt, progress_callback=update_progress, duration=duration)
             if success:
                 with open(outp, 'rb') as f:
                     await message.reply_audio(audio=f, filename=os.path.splitext(fname)[0]+f'.{fmt}', caption=f'💾 *{fmt.upper()}*', parse_mode='Markdown')
@@ -479,11 +578,11 @@ async def execute_audio_action(act, uid, inp, fname, fsize_mb, info, message):
             fmt = parts[2]
             dur = info.get('duration', 0)
             outp = FileManager.get_safe_path(uid, 'out', f'.{fmt}')
-            success = FFmpegProcessor.process_audio(inp, outp, fmt, level='medium', normalize=True, mono_to_stereo=info.get('is_mono', False))
+            success = await FFmpegProcessor.process_audio(inp, outp, fmt, level='medium', normalize=True, mono_to_stereo=info.get('is_mono', False), progress_callback=update_progress, duration=duration)
             if success:
                 with open(outp, 'rb') as f:
-                    await message.reply_audio(audio=f, filename=os.path.splitext(fname)[0]+f'_[PRO-v2.7.4].{fmt}',
-                        caption=f'✅ *PRO v2.7.4 - FFmpeg Streaming!*\n\n🎵 {"Моно → Стерео" if info.get("is_mono", False) else "Стерео"}\n🎚 Компрессия: 2.0:1\n🔉 Нормализация: -16 LUFS\n💾 Формат: {fmt.upper()}\n⏱ Длина: {dur/60:.1f} мин\n\n⚡ Обработано через FFmpeg streaming',
+                    await message.reply_audio(audio=f, filename=os.path.splitext(fname)[0]+f'_[PRO-v2.7.5].{fmt}',
+                        caption=f'✅ *PRO v2.7.5 - FFmpeg Streaming!*\n\n🎵 {"Моно → Стерео" if info.get("is_mono", False) else "Стерео"}\n🎚 Компрессия: 2.0:1\n🔉 Нормализация: -16 LUFS\n💾 Формат: {fmt.upper()}\n⏱ Длина: {dur/60:.1f} мин\n\n⚡ Обработано через FFmpeg streaming',
                         parse_mode='Markdown', read_timeout=180, write_timeout=180)
             else:
                 await message.reply_text('❌ Ошибка обработки')
@@ -535,7 +634,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if act == 'help':
-        txt = '''📚 *Справка по боту v2.7.4*
+        txt = '''📚 *Справка по боту v2.7.5*
 
 ━━━━━━━━━━━━━━━━━━
 🎯 *ОСНОВНЫЕ ФУНКЦИИ:*
@@ -585,8 +684,9 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 • WAV - PCM
 
 ━━━━━━━━━━━━━━━━━━
-⚡ *НОВОЕ в v2.7.4:*
+⚡ *НОВОЕ в v2.7.5:*
 
+✅ Шкала прогресса в реальном времени [████░░] 40%
 ✅ Улучшенная UX: действие → файл → мгновенный результат
 ✅ FFmpeg streaming - файлы ЛЮБОЙ длины (без OOM)
 ✅ Минимальное потребление RAM
@@ -771,12 +871,12 @@ Lossless качество для максимального результата
         info = user_data[uid]['file_info']
 
         await q.answer()
-        await q.edit_message_text('⏳ Обработка...', parse_mode='Markdown')
+        progress_msg = await q.edit_message_text('⏳ Обработка...\n\n[░░░░░░░░░░] 0%', parse_mode='Markdown')
 
         update_stats(uid, act)
 
-        # Выполняем обработку через общую функцию
-        await execute_audio_action(act, uid, inp, fname, fsize_mb, info, q.message)
+        # Выполняем обработку через общую функцию с прогрессом
+        await execute_audio_action(act, uid, inp, fname, fsize_mb, info, q.message, progress_message=progress_msg)
 
         # Показываем меню снова
         kb = [
@@ -922,11 +1022,11 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user_data[uid].pop('pending_action', None)
 
             # Автоматически выполняем действие
-            await update.message.reply_text('⏳ Обработка...', parse_mode='Markdown')
+            progress_msg = await update.message.reply_text('⏳ Обработка...\n\n[░░░░░░░░░░] 0%', parse_mode='Markdown')
             update_stats(uid, pending_act)
 
-            # Выполняем обработку
-            await execute_audio_action(pending_act, uid, inp, fname, fsize_mb, info, update.message)
+            # Выполняем обработку с прогрессом
+            await execute_audio_action(pending_act, uid, inp, fname, fsize_mb, info, update.message, progress_message=progress_msg)
 
             # Показываем меню для следующих действий
             kb = [
@@ -983,7 +1083,7 @@ def main():
     app.add_handler(MessageHandler(filters.AUDIO | filters.VOICE | filters.Document.AUDIO, handle_audio))
 
     logger.info('='*50)
-    logger.info('🚀 Telegram Audio Bot PRO v2.7.4')
+    logger.info('🚀 Telegram Audio Bot PRO v2.7.5')
     logger.info('='*50)
     logger.info('✨ Версия: 2.7 (FFmpeg Streaming)')
     logger.info(f'📦 Макс. размер файла: {MAX_FILE_SIZE_MB} МБ')
