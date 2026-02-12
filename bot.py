@@ -632,46 +632,156 @@ Lossless качество для максимального результата
         await q.edit_message_text(txt, reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
         return
 
-    if uid not in user_data: user_data[uid] = {}
-    user_data[uid]['action'] = act
+    # Проверяем есть ли сохраненный файл
+    has_file = uid in user_data and 'file_path' in user_data[uid] and os.path.exists(user_data[uid]['file_path'])
 
-    # Генерация сообщений для действий с форматами
-    format_icons = {'flac': '💎', 'mp3': '🎵', 'ogg': '🎶', 'wav': '📻'}
-    format_names = {'flac': 'FLAC (без потерь)', 'mp3': 'MP3 320kbps', 'ogg': 'OGG Vorbis', 'wav': 'WAV PCM'}
+    # Определяем является ли действие финальным (не меню)
+    is_final_action = act not in ['enhance_menu', 'convert_menu', 'full_process_ask', 'normalize_ask']
 
-    messages = {
-        'analyze': '📊 *Детальный анализ*\n\nОтправьте аудиофайл, и я проанализирую:\n• Частоту и битность\n• Динамику и качество\n• Уровень громкости (LUFS)',
-        'spectrum': '📈 *Частотный спектр*\n\nОтправьте аудиофайл, и я покажу:\n• Форму волны\n• Частотный спектр (20Hz-20kHz)',
-        'mono_to_stereo': '🎵 *Моно → Стерео*\n\nПреобразование моно-записи в стерео\n\nОтправьте аудиофайл ⬇️',
-        'convert_flac': '💎 *Конвертация в FLAC*\n\nБез потерь качества\nМаксимальное сжатие\n\nОтправьте аудиофайл ⬇️',
-        'convert_mp3': '🎵 *Конвертация в MP3*\n\n320 kbps (высокое качество)\nУниверсальная совместимость\n\nОтправьте аудиофайл ⬇️',
-        'convert_ogg': '🎶 *Конвертация в OGG*\n\nVorbis q10 (отличное качество)\nОткрытый формат\n\nОтправьте аудиофайл ⬇️',
-        'convert_wav': '📻 *Конвертация в WAV*\n\nPCM без сжатия\nСтудийное качество\n\nОтправьте аудиофайл ⬇️'
-    }
+    if has_file and is_final_action:
+        # Обработка сохраненного файла
+        inp = user_data[uid]['file_path']
+        fname = user_data[uid]['file_name']
+        fsize_mb = user_data[uid]['file_size_mb']
+        info = user_data[uid]['file_info']
 
-    # Для действий с улучшением
-    if act.startswith('enhance_') and '_' in act:
-        parts = act.split('_')
-        if len(parts) == 3:  # enhance_level_format
-            level, fmt = parts[1], parts[2]
+        await q.answer()
+        await q.edit_message_text('⏳ Обработка...', parse_mode='Markdown')
+
+        update_stats(uid, act)
+
+        # ВАЖНО: импортируем process_file или создаем его inline
+        # Сейчас вызовем обработку напрямую
+        try:
+            outp = None
+
+            if act == 'analyze':
+                audio = AudioSegment.from_file(inp)
+                s = AudioProcessor.analyze_audio(audio)
+                txt = f'📊 *Детальный анализ*\n\n🎵 Каналы: {"Моно" if s["is_mono"] else "Стерео"}\n📡 Частота: {s["sample_rate"]} Hz\n🎚️ Битность: {s["bit_depth"]} bit\n⏱ Длительность: {s["duration"]:.1f} сек\n📦 Размер: {fsize_mb:.1f} МБ\n\n📈 Качество: {s["quality"]}%\n📊 RMS: {s["rms"]:.3f}\n🔊 Peak: {s["peak"]:.3f}\n🎚 Динамика: {s["dynamic_range"]:.1f} dB\n🔉 Громкость: {s["lufs"]} LUFS'
+                await q.message.reply_text(txt, parse_mode='Markdown')
+
+            elif act == 'spectrum':
+                audio = AudioSegment.from_file(inp)
+                spec = AudioProcessor.create_spectrum_chart(audio)
+                s = AudioProcessor.analyze_audio(audio)
+                await q.message.reply_photo(photo=spec, caption=f'📈 *Спектр*\n\n{s["sample_rate"]} Hz\n{s["dynamic_range"]:.1f} dB', parse_mode='Markdown')
+
+            elif act.startswith('normalize_'):
+                fmt = act.split('_')[1]
+                outp = FileManager.get_safe_path(uid, 'out', f'.{fmt}')
+                success = FFmpegProcessor.process_audio(inp, outp, fmt, level=None, normalize=True, mono_to_stereo=False)
+                if success:
+                    with open(outp, 'rb') as f:
+                        await q.message.reply_audio(audio=f, filename=os.path.splitext(fname)[0]+f'_NORM.{fmt}',
+                            caption=f'🔊 *Нормализовано*\n\nЦель: -16 LUFS\n💾 Формат: {fmt.upper()}', parse_mode='Markdown')
+                else:
+                    await q.message.reply_text('❌ Ошибка нормализации')
+
+            elif act == 'mono_to_stereo':
+                if info['is_mono']:
+                    outp = FileManager.get_safe_path(uid, 'out', '.flac')
+                    success = FFmpegProcessor.process_audio(inp, outp, 'flac', level=None, normalize=False, mono_to_stereo=True)
+                    if success:
+                        with open(outp, 'rb') as f:
+                            await q.message.reply_audio(audio=f, filename=os.path.splitext(fname)[0]+'_STEREO.flac', caption='✅ Моно → Стерео')
+                    else:
+                        await q.message.reply_text('❌ Ошибка конвертации')
+                else:
+                    await q.message.reply_text('ℹ️ Уже стерео')
+
+            elif act.startswith('enhance_'):
+                parts = act.split('_')
+                lvl, fmt = parts[1], parts[2]
+                ratio_map = {'light': '1.5:1', 'medium': '2.0:1', 'heavy': '3.0:1'}
+                outp = FileManager.get_safe_path(uid, 'out', f'.{fmt}')
+                success = FFmpegProcessor.process_audio(inp, outp, fmt, level=lvl, normalize=True, mono_to_stereo=False)
+                if success:
+                    with open(outp, 'rb') as f:
+                        await q.message.reply_audio(audio=f, filename=os.path.splitext(fname)[0]+f'_[{lvl.upper()}].{fmt}',
+                            caption=f'✅ *Улучшено ({ratio_map[lvl]})*\n\n🎚 Компрессия: {ratio_map[lvl]}\n🔉 Нормализация: -16 LUFS\n💾 Формат: {fmt.upper()}', parse_mode='Markdown')
+                else:
+                    await q.message.reply_text('❌ Ошибка обработки')
+
+            elif act.startswith('convert_'):
+                fmt = act.split('_')[1]
+                outp = FileManager.get_safe_path(uid, 'out', f'.{fmt}')
+                success = FFmpegProcessor.convert_format(inp, outp, fmt)
+                if success:
+                    with open(outp, 'rb') as f:
+                        await q.message.reply_audio(audio=f, filename=os.path.splitext(fname)[0]+f'.{fmt}', caption=f'💾 *{fmt.upper()}*', parse_mode='Markdown')
+                else:
+                    await q.message.reply_text('❌ Ошибка конвертации')
+
+            elif act.startswith('full_process_'):
+                fmt = act.split('_')[2]
+                dur = info['duration']
+                outp = FileManager.get_safe_path(uid, 'out', f'.{fmt}')
+                success = FFmpegProcessor.process_audio(inp, outp, fmt, level='medium', normalize=True, mono_to_stereo=info['is_mono'])
+                if success:
+                    with open(outp, 'rb') as f:
+                        await q.message.reply_audio(audio=f, filename=os.path.splitext(fname)[0]+f'_[PRO-v2.7].{fmt}',
+                            caption=f'✅ *PRO v2.7 - FFmpeg Streaming!*\n\n🎵 {"Моно → Стерео" if info["is_mono"] else "Стерео"}\n🎚 Компрессия: 2.0:1\n🔉 Нормализация: -16 LUFS\n💾 Формат: {fmt.upper()}\n⏱ Длина: {dur/60:.1f} мин\n\n⚡ Обработано через FFmpeg streaming',
+                            parse_mode='Markdown', read_timeout=180, write_timeout=180)
+                else:
+                    await q.message.reply_text('❌ Ошибка обработки')
+
+            # Cleanup output file
+            if outp and os.path.exists(outp):
+                try: os.remove(outp)
+                except: pass
+
+            # Показываем меню снова
+            kb = [
+                [InlineKeyboardButton('🚀 Полная обработка', callback_data='full_process_ask')],
+                [InlineKeyboardButton('📊 Анализ', callback_data='analyze'), InlineKeyboardButton('📈 Спектр', callback_data='spectrum')],
+                [InlineKeyboardButton('✨ Улучшить звук', callback_data='enhance_menu'), InlineKeyboardButton('🔊 Нормализация', callback_data='normalize_ask')],
+                [InlineKeyboardButton('🎵 Моно→Стерео', callback_data='mono_to_stereo'), InlineKeyboardButton('💾 Конвертер', callback_data='convert_menu')],
+                [InlineKeyboardButton('🔄 Загрузить другой файл', callback_data='back_main')]
+            ]
+            await q.message.reply_text('Выберите ещё действие или загрузите другой файл:', reply_markup=InlineKeyboardMarkup(kb))
+
+        except Exception as e:
+            logger.error(f'Ошибка обработки: {e}', exc_info=True)
+            await q.message.reply_text(f'❌ Ошибка: {str(e)}')
+
+    else:
+        # Нет файла - показываем сообщение о загрузке
+        if uid not in user_data: user_data[uid] = {}
+        user_data[uid]['action'] = act
+
+        format_icons = {'flac': '💎', 'mp3': '🎵', 'ogg': '🎶', 'wav': '📻'}
+        format_names = {'flac': 'FLAC (без потерь)', 'mp3': 'MP3 320kbps', 'ogg': 'OGG Vorbis', 'wav': 'WAV PCM'}
+
+        messages = {
+            'analyze': '📊 *Детальный анализ*\n\nОтправьте аудиофайл ⬇️',
+            'spectrum': '📈 *Частотный спектр*\n\nОтправьте аудиофайл ⬇️',
+            'mono_to_stereo': '🎵 *Моно → Стерео*\n\nОтправьте аудиофайл ⬇️',
+        }
+
+        if act.startswith('enhance_') and len(act.split('_')) == 3:
+            level, fmt = act.split('_')[1], act.split('_')[2]
             level_names = {'light': 'Light (1.5:1)', 'medium': 'Medium (2.0:1)', 'heavy': 'Heavy (3.0:1)'}
             messages[act] = f'✨ *Улучшение: {level_names[level]}*\n\n{format_icons[fmt]} Формат: {format_names[fmt]}\n\nОтправьте аудиофайл ⬇️'
 
-    # Для нормализации с форматом
-    if act.startswith('normalize_') and act != 'normalize':
-        fmt = act.split('_')[1]
-        messages[act] = f'🔊 *Нормализация громкости*\n\n{format_icons[fmt]} Формат: {format_names[fmt]}\nЦель: -16 LUFS\n\nОтправьте аудиофайл ⬇️'
+        if act.startswith('normalize_') and act != 'normalize_ask':
+            fmt = act.split('_')[1]
+            messages[act] = f'🔊 *Нормализация*\n\n{format_icons[fmt]} Формат: {format_names[fmt]}\n\nОтправьте аудиофайл ⬇️'
 
-    # Для полной обработки с форматом
-    if act.startswith('full_process_') and act != 'full_process':
-        fmt = act.split('_')[2]
-        messages[act] = f'🚀 *Полная обработка*\n\n{format_icons[fmt]} Формат: {format_names[fmt]}\n\nВключает:\n✅ Моно → Стерео\n✅ Мягкая компрессия (2:1)\n✅ Нормализация (-16 LUFS)\n✅ Графики и анализ\n\nОтправьте аудиофайл ⬇️'
+        if act.startswith('full_process_') and act != 'full_process_ask':
+            fmt = act.split('_')[2]
+            messages[act] = f'🚀 *Полная обработка*\n\n{format_icons[fmt]} Формат: {format_names[fmt]}\n\nОтправьте аудиофайл ⬇️'
 
-    txt = messages.get(act, f'*{act}*\n\nОтправьте аудиофайл')
-    kb = [[InlineKeyboardButton('◀️ Главное меню', callback_data='back_main')]]
-    await q.edit_message_text(txt, reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
+        if act.startswith('convert_'):
+            fmt = act.split('_')[1]
+            messages[act] = f'💾 *Конвертация в {fmt.upper()}*\n\nОтправьте аудиофайл ⬇️'
+
+        txt = messages.get(act, f'*{act}*\n\nОтправьте аудиофайл ⬇️')
+        kb = [[InlineKeyboardButton('◀️ Главное меню', callback_data='back_main')]]
+        await q.edit_message_text(txt, reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
 
 async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Загружает файл и показывает меню действий"""
     uid = update.message.from_user.id
 
     if not rate_limiter.is_allowed(uid):
@@ -679,15 +789,8 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f'⏱️ Подождите {wt} сек')
         return
 
-    if uid not in user_data or 'action' not in user_data[uid]:
-        kb = [[InlineKeyboardButton('📊 Анализ', callback_data='analyze'), InlineKeyboardButton('✨ Улучшить', callback_data='enhance_menu')], [InlineKeyboardButton('🚀 Полная', callback_data='full_process')]]
-        await update.message.reply_text('Выберите:', reply_markup=InlineKeyboardMarkup(kb))
-        return
-
-    act = user_data[uid]['action']
-
-    # Проверка размера файла ДО get_file() (Telegram Bot API ограничение: 20 MB)
-    TELEGRAM_MAX_FILE_SIZE = 20  # MB - лимит Telegram Bot API для скачивания
+    # Проверка размера файла ДО get_file()
+    TELEGRAM_MAX_FILE_SIZE = 20  # MB
 
     if update.message.audio:
         fname = update.message.audio.file_name or 'audio.mp3'
@@ -704,7 +807,6 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     fsize_mb = fsize / (1024*1024) if fsize else 0
 
-    # Проверка размера файла (Telegram Bot API лимит: 20 MB)
     if fsize_mb > TELEGRAM_MAX_FILE_SIZE:
         await update.message.reply_text(
             f'❌ *Файл слишком большой: {fsize_mb:.1f} МБ*\n\n'
@@ -717,7 +819,7 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Получение файла с обработкой ошибок
+    # Получение файла
     try:
         if update.message.audio:
             file = await update.message.audio.get_file()
@@ -737,203 +839,63 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(f'⏳ Загрузка ({fsize_mb:.1f} МБ)...')
 
-    inp = outp = None
     try:
-        inp = FileManager.get_safe_path(uid, 'in')
+        # Удаляем старый файл если есть
+        if uid in user_data and 'file_path' in user_data[uid]:
+            old_file = user_data[uid]['file_path']
+            if old_file and os.path.exists(old_file):
+                try:
+                    os.remove(old_file)
+                except:
+                    pass
+
+        # Сохраняем новый файл
+        inp = FileManager.get_safe_path(uid, 'saved')
         await file.download_to_drive(inp)
 
-        # Получаем инфо через ffprobe (БЕЗ загрузки в память!)
+        # Получаем инфо через ffprobe
         info = FFmpegProcessor.get_audio_info(inp)
         if not info:
             await update.message.reply_text('❌ Не удалось прочитать аудиофайл')
-            if inp and os.path.exists(inp): os.remove(inp)
+            if os.path.exists(inp):
+                os.remove(inp)
             return
 
         dur = info['duration']
-        channels = info['channels']
-        sample_rate = info['sample_rate']
-        is_mono = info['is_mono']
+        logger.info(f'Сохранен: {fname}, {dur:.1f}с, {info["sample_rate"]}Hz, {info["channels"]}ch')
 
-        logger.info(f'Загружено: {fname}, {dur:.1f}с, {sample_rate}Hz, {channels}ch, codec={info["codec"]}')
+        # Сохраняем данные о файле
+        if uid not in user_data:
+            user_data[uid] = {}
 
-        update_stats(uid, act)
+        user_data[uid]['file_path'] = inp
+        user_data[uid]['file_name'] = fname
+        user_data[uid]['file_size_mb'] = fsize_mb
+        user_data[uid]['file_info'] = info
 
-        if act == 'analyze':
-            s = AudioProcessor.analyze_audio(audio)
-            txt = f'📊 *Детальный анализ*\n\n🎵 Каналы: {"Моно" if s["is_mono"] else "Стерео"}\n📡 Частота: {s["sample_rate"]} Hz\n🎚️ Битность: {s["bit_depth"]} bit\n⏱ Длительность: {s["duration"]:.1f} сек\n📦 Размер: {fsize_mb:.1f} МБ\n\n📈 Качество: {s["quality"]}%\n📊 RMS: {s["rms"]:.3f}\n🔊 Peak: {s["peak"]:.3f}\n🎚 Динамика: {s["dynamic_range"]:.1f} dB\n🔉 Громкость: {s["lufs"]} LUFS'
-            await update.message.reply_text(txt, parse_mode='Markdown')
+        # Показываем меню
+        txt = f'''✅ *Файл загружен!*
 
-        elif act == 'spectrum':
-            spec = AudioProcessor.create_spectrum_chart(audio)
-            s = AudioProcessor.analyze_audio(audio)
-            await update.message.reply_photo(photo=spec, caption=f'📈 *Спектр*\n\n{s["sample_rate"]} Hz\n{s["dynamic_range"]:.1f} dB', parse_mode='Markdown')
+📄 Имя: {fname}
+📦 Размер: {fsize_mb:.1f} МБ
+⏱ Длина: {dur/60:.1f} мин
+🎵 {"Моно" if info["is_mono"] else "Стерео"} • {info["sample_rate"]} Hz
 
-        elif act.startswith('normalize_'):
-            fmt = act.split('_')[1] if '_' in act else 'flac'
-            await update.message.reply_text('🔊 Нормализация через FFmpeg...')
+Выберите действие:'''
 
-            outp = FileManager.get_safe_path(uid, 'out', f'.{fmt}')
+        kb = [
+            [InlineKeyboardButton('🚀 Полная обработка', callback_data='full_process_ask')],
+            [InlineKeyboardButton('📊 Анализ', callback_data='analyze'), InlineKeyboardButton('📈 Спектр', callback_data='spectrum')],
+            [InlineKeyboardButton('✨ Улучшить звук', callback_data='enhance_menu'), InlineKeyboardButton('🔊 Нормализация', callback_data='normalize_ask')],
+            [InlineKeyboardButton('🎵 Моно→Стерео', callback_data='mono_to_stereo'), InlineKeyboardButton('💾 Конвертер', callback_data='convert_menu')]
+        ]
 
-            # Обработка через FFmpeg (streaming, минимум RAM)
-            success = FFmpegProcessor.process_audio(
-                input_path=inp,
-                output_path=outp,
-                output_format=fmt,
-                level=None,  # без компрессии
-                normalize=True,
-                mono_to_stereo=False
-            )
-
-            if not success:
-                await update.message.reply_text('❌ Ошибка нормализации')
-                return
-
-            with open(outp, 'rb') as f:
-                await update.message.reply_audio(
-                    audio=f,
-                    filename=os.path.splitext(fname)[0]+f'_NORM.{fmt}',
-                    caption=f'🔊 *Нормализовано*\n\nЦель: -16 LUFS\n💾 Формат: {fmt.upper()}',
-                    parse_mode='Markdown'
-                )
-
-        elif act == 'mono_to_stereo':
-            if is_mono:
-                await update.message.reply_text('🎵 Моно → Стерео...')
-                outp = FileManager.get_safe_path(uid, 'out', '.flac')
-
-                success = FFmpegProcessor.process_audio(
-                    input_path=inp,
-                    output_path=outp,
-                    output_format='flac',
-                    level=None,
-                    normalize=False,
-                    mono_to_stereo=True
-                )
-
-                if not success:
-                    await update.message.reply_text('❌ Ошибка конвертации')
-                    return
-
-                with open(outp, 'rb') as f:
-                    await update.message.reply_audio(
-                        audio=f,
-                        filename=os.path.splitext(fname)[0]+'_STEREO.flac',
-                        caption='✅ Моно → Стерео'
-                    )
-            else:
-                await update.message.reply_text('ℹ️ Уже стерео')
-
-        elif act.startswith('enhance_'):
-            parts = act.split('_')
-            lvl = parts[1]
-            fmt = parts[2] if len(parts) >= 3 else 'flac'
-
-            ratio_map = {'light': '1.5:1', 'medium': '2.0:1', 'heavy': '3.0:1'}
-            await update.message.reply_text(f'✨ Улучшение FFmpeg ({ratio_map[lvl]})...')
-
-            outp = FileManager.get_safe_path(uid, 'out', f'.{fmt}')
-
-            # Обработка через FFmpeg (streaming)
-            success = FFmpegProcessor.process_audio(
-                input_path=inp,
-                output_path=outp,
-                output_format=fmt,
-                level=lvl,
-                normalize=True,
-                mono_to_stereo=False
-            )
-
-            if not success:
-                await update.message.reply_text('❌ Ошибка обработки')
-                return
-
-            with open(outp, 'rb') as f:
-                await update.message.reply_audio(
-                    audio=f,
-                    filename=os.path.splitext(fname)[0]+f'_[{lvl.upper()}].{fmt}',
-                    caption=f'✅ *Улучшено ({ratio_map[lvl]})*\n\n🎚 Компрессия: {ratio_map[lvl]}\n🔉 Нормализация: -16 LUFS\n💾 Формат: {fmt.upper()}',
-                    parse_mode='Markdown'
-                )
-
-        elif act.startswith('convert_'):
-            fmt = act.split('_')[1]
-            await update.message.reply_text(f'💾 Конвертация в {fmt.upper()}...')
-
-            outp = FileManager.get_safe_path(uid, 'out', f'.{fmt}')
-
-            success = FFmpegProcessor.convert_format(
-                input_path=inp,
-                output_path=outp,
-                output_format=fmt
-            )
-
-            if not success:
-                await update.message.reply_text('❌ Ошибка конвертации')
-                return
-
-            with open(outp, 'rb') as f:
-                await update.message.reply_audio(
-                    audio=f,
-                    filename=os.path.splitext(fname)[0]+f'.{fmt}',
-                    caption=f'💾 *{fmt.upper()}*',
-                    parse_mode='Markdown'
-                )
-
-        elif act.startswith('full_process_'):
-            fmt = act.split('_')[2] if len(act.split('_')) >= 3 else 'flac'
-
-            await update.message.reply_text(f'🚀 Полная обработка FFmpeg ({dur/60:.1f} мин)...')
-
-            outp = FileManager.get_safe_path(uid, 'out', f'.{fmt}')
-
-            # Обработка через FFmpeg (streaming, любая длина!)
-            success = FFmpegProcessor.process_audio(
-                input_path=inp,
-                output_path=outp,
-                output_format=fmt,
-                level='medium',
-                normalize=True,
-                mono_to_stereo=is_mono
-            )
-
-            if not success:
-                await update.message.reply_text('❌ Ошибка обработки')
-                return
-
-            await update.message.reply_text('📤 Отправка...')
-            with open(outp, 'rb') as f:
-                await update.message.reply_audio(
-                    audio=f,
-                    filename=os.path.splitext(fname)[0]+f'_[PRO-v2.7].{fmt}',
-                    caption=f'✅ *PRO v2.7 - FFmpeg Streaming!*\n\n'
-                            f'🎵 {"Моно → Стерео" if is_mono else "Стерео"}\n'
-                            f'🎚 Компрессия: 2.0:1\n'
-                            f'🔉 Нормализация: -16 LUFS\n'
-                            f'💾 Формат: {fmt.upper()}\n'
-                            f'⏱ Длина: {dur/60:.1f} мин\n\n'
-                            f'⚡ Обработано через FFmpeg streaming',
-                    parse_mode='Markdown',
-                    read_timeout=180,
-                    write_timeout=180
-                )
-
-            await update.message.reply_text('✅ Готово!')
-
-        if inp and os.path.exists(inp): os.remove(inp)
-        if outp and os.path.exists(outp): os.remove(outp)
-
-        kb = [[InlineKeyboardButton('📊 Анализ', callback_data='analyze'), InlineKeyboardButton('✨ Улучшить', callback_data='enhance_menu')], [InlineKeyboardButton('🚀 Полная', callback_data='full_process')]]
-        await update.message.reply_text('Ещё?', reply_markup=InlineKeyboardMarkup(kb))
+        await update.message.reply_text(txt, reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
 
     except Exception as e:
-        logger.error(f'❌ {e}', exc_info=True)
+        logger.error(f'❌ Ошибка загрузки: {e}', exc_info=True)
         await update.message.reply_text(f'❌ Ошибка: {str(e)}')
-        if inp and os.path.exists(inp):
-            try: os.remove(inp)
-            except: pass
-        if outp and os.path.exists(outp):
-            try: os.remove(outp)
-            except: pass
+
 
 def main():
     if not BOT_TOKEN or BOT_TOKEN == 'YOUR_BOT_TOKEN':
