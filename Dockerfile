@@ -2,8 +2,8 @@ FROM python:3.11-slim
 
 # Метаданные
 LABEL maintainer="Audio Bot Developer"
-LABEL version="2.4"
-LABEL description="Telegram Audio Bot PRO v2.4 - File Size Check"
+LABEL version="2.5"
+LABEL description="Telegram Audio Bot PRO v2.5 - File Size Check"
 
 # Установка переменных окружения
 ENV PYTHONUNBUFFERED=1 \

@@ -1,13 +1,37 @@
 version: '3.8'
 
 services:
+  # Local Telegram Bot API Server (для файлов >20 MB, до 2000 MB)
+  telegram-bot-api:
+    image: aiogram/telegram-bot-api:latest
+    container_name: telegram-bot-api
+    restart: unless-stopped
+    environment:
+      - TELEGRAM_API_ID=${TELEGRAM_API_ID}
+      - TELEGRAM_API_HASH=${TELEGRAM_API_HASH}
+    volumes:
+      - telegram-bot-api-data:/var/lib/telegram-bot-api
+    networks:
+      - audio-bot-net
+    ports:
+      - "8081:8081"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
   telegram-audio-bot:
     build:
       context: .
       dockerfile: Dockerfile
-    image: telegram-audio-bot:2.4
+    image: telegram-audio-bot:2.5
     container_name: telegram-audio-bot-pro
     restart: unless-stopped
+    depends_on:
+      telegram-bot-api:
+        condition: service_healthy
 
     deploy:
       resources:
@@ -21,7 +45,9 @@ services:
       - BOT_TOKEN=${BOT_TOKEN}
       - TZ=Europe/Moscow
       - PYTHONUNBUFFERED=1
-      - MAX_FILE_SIZE_MB=${MAX_FILE_SIZE_MB:-100}
+      - USE_LOCAL_API=${USE_LOCAL_API:-true}
+      - LOCAL_API_URL=${LOCAL_API_URL:-http://telegram-bot-api:8081}
+      - MAX_FILE_SIZE_MB=${MAX_FILE_SIZE_MB:-2000}
       - CLEANUP_INTERVAL_MINUTES=${CLEANUP_INTERVAL_MINUTES:-30}
       - TEMP_FILE_MAX_AGE_HOURS=${TEMP_FILE_MAX_AGE_HOURS:-2}
 
@@ -43,6 +69,8 @@ volumes:
   audio-bot-temp:
     driver: local
   audio-bot-logs:
+    driver: local
+  telegram-bot-api-data:
     driver: local
 
 networks:
