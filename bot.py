@@ -299,7 +299,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = f'''
 🎵 *Привет, {user_name}!*
 
-Добро пожаловать в *Telegram Audio Bot PRO v2.3* 🎧
+Добро пожаловать в *Telegram Audio Bot PRO v2.4* 🎧
 
 ━━━━━━━━━━━━━━━━━━━━━━
 ✨ *Возможности бота:*
@@ -372,7 +372,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if act == 'help':
-        txt = '''📚 *Справка по боту v2.3*
+        txt = '''📚 *Справка по боту v2.4*
 
 ━━━━━━━━━━━━━━━━━━
 🎯 *ОСНОВНЫЕ ФУНКЦИИ:*
@@ -647,16 +647,16 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     act = user_data[uid]['action']
 
+    # Проверка размера файла ДО get_file() (Telegram Bot API ограничение: 20 MB)
+    TELEGRAM_MAX_FILE_SIZE = 20  # MB - лимит Telegram Bot API для скачивания
+
     if update.message.audio:
-        file = await update.message.audio.get_file()
         fname = update.message.audio.file_name or 'audio.mp3'
         fsize = update.message.audio.file_size
     elif update.message.voice:
-        file = await update.message.voice.get_file()
         fname = 'voice.ogg'
         fsize = update.message.voice.file_size
     elif update.message.document:
-        file = await update.message.document.get_file()
         fname = update.message.document.file_name
         fsize = update.message.document.file_size
     else:
@@ -664,8 +664,40 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     fsize_mb = fsize / (1024*1024) if fsize else 0
+
+    # Проверка лимита Telegram Bot API
+    if fsize_mb > TELEGRAM_MAX_FILE_SIZE:
+        await update.message.reply_text(
+            f'❌ *Файл слишком большой: {fsize_mb:.1f} МБ*\n\n'
+            f'Telegram Bot API ограничение: *{TELEGRAM_MAX_FILE_SIZE} МБ*\n\n'
+            f'💡 Попробуйте:\n'
+            f'• Сжать файл до {TELEGRAM_MAX_FILE_SIZE} МБ\n'
+            f'• Отправить более короткий фрагмент\n'
+            f'• Использовать формат с меньшим битрейтом',
+            parse_mode='Markdown'
+        )
+        return
+
     if fsize_mb > MAX_FILE_SIZE_MB:
         await update.message.reply_text(f'❌ Файл {fsize_mb:.1f} МБ > {MAX_FILE_SIZE_MB} МБ')
+        return
+
+    # Получение файла с обработкой ошибок
+    try:
+        if update.message.audio:
+            file = await update.message.audio.get_file()
+        elif update.message.voice:
+            file = await update.message.voice.get_file()
+        elif update.message.document:
+            file = await update.message.document.get_file()
+    except Exception as e:
+        logger.error(f'Ошибка get_file: {e}')
+        await update.message.reply_text(
+            f'❌ *Не удалось получить файл*\n\n'
+            f'Причина: {str(e)}\n\n'
+            f'Размер файла: {fsize_mb:.1f} МБ',
+            parse_mode='Markdown'
+        )
         return
 
     await update.message.reply_text(f'⏳ Обработка ({fsize_mb:.1f} МБ)...')
@@ -821,8 +853,8 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             await update.message.reply_text('📤 Отправка...')
             with open(outp, 'rb') as f:
-                await update.message.reply_audio(audio=f, filename=os.path.splitext(fname)[0]+f'_[PRO-v2.3].{fmt}',
-                    caption=f'✅ *PRO v2.3!*\n\n📊 Качество: {before["quality"]}% → {after["quality"]}%\n🎵 {"Моно" if before["is_mono"] else "Стерeo"} → Стерео\n🎚 Динамика: {before["dynamic_range"]:.1f} → {after["dynamic_range"]:.1f} dB\n🔉 LUFS: {before["lufs"]} → {after["lufs"]}\n💾 Формат: {fmt.upper()}\n\n✨ Мягкая компрессия 2:1',
+                await update.message.reply_audio(audio=f, filename=os.path.splitext(fname)[0]+f'_[PRO-v2.4].{fmt}',
+                    caption=f'✅ *PRO v2.4!*\n\n📊 Качество: {before["quality"]}% → {after["quality"]}%\n🎵 {"Моно" if before["is_mono"] else "Стерeo"} → Стерео\n🎚 Динамика: {before["dynamic_range"]:.1f} → {after["dynamic_range"]:.1f} dB\n🔉 LUFS: {before["lufs"]} → {after["lufs"]}\n💾 Формат: {fmt.upper()}\n\n✨ Мягкая компрессия 2:1',
                     parse_mode='Markdown', read_timeout=180, write_timeout=180)
 
             await update.message.reply_text('✅ Готово!')
@@ -859,9 +891,9 @@ def main():
     app.add_handler(MessageHandler(filters.AUDIO | filters.VOICE | filters.Document.AUDIO, handle_audio))
 
     logger.info('='*50)
-    logger.info('🚀 Telegram Audio Bot PRO v2.3')
+    logger.info('🚀 Telegram Audio Bot PRO v2.4')
     logger.info('='*50)
-    logger.info('✨ Версия: 2.3 (Format Selection)')
+    logger.info('✨ Версия: 2.4 (File Size Check)')
     logger.info(f'📦 Макс. размер файла: {MAX_FILE_SIZE_MB} МБ')
     logger.info(f'🧹 Автоочистка: каждые {CLEANUP_INTERVAL_MINUTES} мин')
     logger.info(f'⏰ Макс. возраст файлов: {TEMP_FILE_MAX_AGE_HOURS} ч')
