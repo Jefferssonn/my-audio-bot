@@ -1,0 +1,50 @@
+version: '3.8'
+
+services:
+  telegram-audio-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: telegram-audio-bot:2.2
+    container_name: telegram-audio-bot-pro
+    restart: unless-stopped
+
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '2'
+        reservations:
+          memory: 512M
+
+    environment:
+      - BOT_TOKEN=${BOT_TOKEN}
+      - TZ=Europe/Moscow
+      - PYTHONUNBUFFERED=1
+      - MAX_FILE_SIZE_MB=${MAX_FILE_SIZE_MB:-100}
+      - CLEANUP_INTERVAL_MINUTES=${CLEANUP_INTERVAL_MINUTES:-30}
+      - TEMP_FILE_MAX_AGE_HOURS=${TEMP_FILE_MAX_AGE_HOURS:-2}
+
+    volumes:
+      - audio-bot-temp:/app/temp
+      - audio-bot-logs:/app/logs
+
+    networks:
+      - audio-bot-net
+
+    healthcheck:
+      test: ["CMD-SHELL", "ps aux | grep -q '[p]ython.*bot.py' || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+volumes:
+  audio-bot-temp:
+    driver: local
+  audio-bot-logs:
+    driver: local
+
+networks:
+  audio-bot-net:
+    driver: bridge

@@ -1,0 +1,58 @@
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Documentation
+README.md
+QUICKSTART.md
+*.md
+!requirements.txt
+
+# Logs
+logs/
+*.log
+
+# Temporary files
+temp/
+*.tmp
+*.temp
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Scripts (not needed in container)
+scripts/
+
+# Docker
+docker-compose.yml
+Dockerfile
+.dockerignore
+
+# Backup files
+*.bak
+*.backup

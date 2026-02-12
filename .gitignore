@@ -1,0 +1,37 @@
+# Переменные окружения с секретами
+.env
+
+# Логи
+logs/
+*.log
+
+# Временные файлы
+temp/
+*.tmp
+
+# Docker volumes
+audio-bot-temp/
+audio-bot-logs/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Backup files
+*.bak
+*.backup
