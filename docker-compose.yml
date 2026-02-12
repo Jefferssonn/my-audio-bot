@@ -12,10 +12,10 @@ services:
     deploy:
       resources:
         limits:
-          memory: 2G
+          memory: 4G
           cpus: '2'
         reservations:
-          memory: 1G
+          memory: 2G
 
     environment:
       - BOT_TOKEN=${BOT_TOKEN}

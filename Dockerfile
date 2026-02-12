@@ -2,8 +2,8 @@ FROM python:3.11-slim
 
 # Метаданные
 LABEL maintainer="Audio Bot Developer"
-LABEL version="2.5"
-LABEL description="Telegram Audio Bot PRO v2.6 - File Size Check"
+LABEL version="2.6"
+LABEL description="Telegram Audio Bot PRO v2.6 - Stable"
 
 # Установка переменных окружения
 ENV PYTHONUNBUFFERED=1 \
@@ -39,5 +39,5 @@ RUN mkdir -p /app/temp /app/logs && \
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD ps aux | grep -q '[p]ython.*bot.py' || exit 1
 
-# Запуск бота с ожиданием Bot API Server
-CMD ["sh", "-c", "sleep 10 && python -u bot.py"]
+# Запуск бота
+CMD ["python", "-u", "bot.py"]
