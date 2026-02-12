@@ -294,17 +294,48 @@ def update_stats(uid, action):
     user_stats[uid]['actions'][action] = user_stats[uid]['actions'].get(action, 0) + 1
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_name = update.message.from_user.first_name or "друг"
+
+    text = f'''
+🎵 *Привет, {user_name}!*
+
+Добро пожаловать в *Telegram Audio Bot PRO v2.2* 🎧
+
+━━━━━━━━━━━━━━━━━━━━━━
+✨ *Возможности бота:*
+
+🎚️ *Улучшение аудио*
+• Мягкая компрессия (1.5:1 - 3.0:1)
+• Сохранение динамики
+• Естественный звук
+
+📊 *Анализ*
+• Детальная оценка качества
+• Частотный спектр
+• Графики и визуализация
+
+🔊 *Обработка*
+• Нормализация громкости (-16 LUFS)
+• Моно → Стерео
+• Конвертация форматов
+
+━━━━━━━━━━━━━━━━━━━━━━
+⚙️ *Настройки:*
+📦 Макс. размер: {MAX_FILE_SIZE_MB} МБ
+🎯 Rate limit: 5 запросов/мин
+
+━━━━━━━━━━━━━━━━━━━━━━
+📤 *Отправьте аудиофайл* и выберите действие ⬇️
+'''
+
     kb = [
-        [InlineKeyboardButton('📊 Анализ', callback_data='analyze')],
-        [InlineKeyboardButton('📈 Спектр', callback_data='spectrum')],
-        [InlineKeyboardButton('✨ Улучшить', callback_data='enhance_menu')],
-        [InlineKeyboardButton('🔊 Нормализация', callback_data='normalize')],
-        [InlineKeyboardButton('🎵 Моно→Стерео', callback_data='mono_to_stereo')],
-        [InlineKeyboardButton('💾 Конвертер', callback_data='convert_menu')],
         [InlineKeyboardButton('🚀 Полная обработка', callback_data='full_process')],
-        [InlineKeyboardButton('📈 Статистика', callback_data='stats'), InlineKeyboardButton('ℹ️ Помощь', callback_data='help')]
+        [InlineKeyboardButton('📊 Анализ', callback_data='analyze'), InlineKeyboardButton('📈 Спектр', callback_data='spectrum')],
+        [InlineKeyboardButton('✨ Улучшить звук', callback_data='enhance_menu'), InlineKeyboardButton('🔊 Нормализация', callback_data='normalize')],
+        [InlineKeyboardButton('🎵 Моно→Стерео', callback_data='mono_to_stereo'), InlineKeyboardButton('💾 Конвертер', callback_data='convert_menu')],
+        [InlineKeyboardButton('📚 Помощь', callback_data='help'), InlineKeyboardButton('📈 Статистика', callback_data='stats')]
     ]
-    text = f'🎵 *Аудио Улучшатель PRO v2.2*\n\n🎚️ ИСПРАВЛЕНО: Мягкая компрессия\n📊 Сохранение динамики\n🔊 Правильная громкость\n💾 Без потери качества\n\n⚙️ *Лимиты:*\n📦 Макс. размер: {MAX_FILE_SIZE_MB} МБ\n\nОтправьте аудио и выберите действие:'
+
     await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -316,60 +347,186 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if act == 'stats':
         if uid in user_stats:
             s = user_stats[uid]
-            txt = f'📈 *Статистика:*\n\n📊 Всего: {s["total"]}\n⏰ Последнее: {s["last"][:16] if s["last"] else "—"}\n\n*Популярные:*\n'
-            for a, c in sorted(s['actions'].items(), key=lambda x: x[1], reverse=True)[:5]:
-                txt += f'• {a}: {c}\n'
+            txt = f'''📈 *Ваша статистика*
+
+━━━━━━━━━━━━━━━━━━
+📊 Всего обработано: *{s["total"]}* файлов
+⏰ Последнее: {s["last"][:16] if s["last"] else "—"}
+
+🔥 *ТОП-5 операций:*
+'''
+            for i, (a, c) in enumerate(sorted(s['actions'].items(), key=lambda x: x[1], reverse=True)[:5], 1):
+                txt += f'{i}. {a}: *{c}* раз\n'
+            txt += '\n━━━━━━━━━━━━━━━━━━'
         else:
-            txt = '📈 *Статистика пуста*\n\nОтправьте аудио!'
-        await q.edit_message_text(txt, parse_mode='Markdown')
+            txt = '''📈 *Статистика*
+
+━━━━━━━━━━━━━━━━━━
+📭 Пока нет данных
+
+Отправьте аудиофайл, чтобы начать!
+━━━━━━━━━━━━━━━━━━'''
+
+        kb = [[InlineKeyboardButton('◀️ Главное меню', callback_data='back_main')]]
+        await q.edit_message_text(txt, reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
         return
 
     if act == 'help':
-        txt = '📖 *Инструкция v2.2:*\n\n📊 *Анализ* - детальная оценка\n📈 *Спектр* - частотный график\n✨ *Улучшение* - МЯГКАЯ компрессия\n   • Light: 1.5:1 (самая мягкая)\n   • Medium: 2.0:1 (рекомендуется)\n   • Heavy: 3.0:1 (для подкастов)\n🔊 *Нормализация* - -16 LUFS\n🎵 *Моно→Стерео*\n💾 *Форматы* - FLAC lossless\n🚀 *Полная* = все улучшения\n\n✅ *v2.2: Сохранение динамики!*\n• Мягкая компрессия (1.5-3:1)\n• Сохранение качества\n• Естественный звук'
-        await q.edit_message_text(txt, parse_mode='Markdown')
+        txt = '''📚 *Справка по боту v2.2*
+
+━━━━━━━━━━━━━━━━━━
+🎯 *ОСНОВНЫЕ ФУНКЦИИ:*
+
+🚀 *Полная обработка*
+Автоматически применяет все улучшения:
+• Конвертация моно → стерео
+• Мягкая компрессия (2.0:1)
+• Нормализация громкости
+• Экспорт в FLAC
+
+📊 *Анализ*
+Детальная информация о файле:
+• Частота дискретизации
+• Динамический диапазон
+• Уровень громкости (LUFS)
+• Качество звука
+
+📈 *Спектр*
+Визуализация:
+• Форма волны
+• Частотный спектр
+
+━━━━━━━━━━━━━━━━━━
+✨ *УЛУЧШЕНИЕ ЗВУКА:*
+
+🔹 *Light* (1.5:1)
+Самая мягкая компрессия для музыки с высокой динамикой
+
+🔸 *Medium* (2.0:1) ⭐
+Рекомендуется для большинства случаев
+
+🔶 *Heavy* (3.0:1)
+Для подкастов и голосовых записей
+
+━━━━━━━━━━━━━━━━━━
+🔊 *Нормализация*
+Точная настройка громкости до -16 LUFS (стандарт стриминга)
+
+🎵 *Моно → Стерео*
+Преобразование моно-записи в стерео
+
+💾 *Конвертер*
+• FLAC - без потерь
+• MP3 - 320 kbps
+• OGG - q10
+• WAV - PCM
+
+━━━━━━━━━━━━━━━━━━
+⚙️ *ТЕХНИЧЕСКИЕ ДЕТАЛИ:*
+
+✅ Мягкая компрессия (1.5-3:1)
+✅ Сохранение динамики
+✅ Headroom 3dB
+✅ Автоочистка временных файлов
+✅ Rate limiting: 5 req/min
+
+━━━━━━━━━━━━━━━━━━'''
+
+        kb = [[InlineKeyboardButton('◀️ Главное меню', callback_data='back_main')]]
+        await q.edit_message_text(txt, reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
         return
 
     if act == 'enhance_menu':
+        txt = '''✨ *Выберите уровень компрессии*
+
+━━━━━━━━━━━━━━━━━━
+🔹 *Light (1.5:1)*
+Минимальная компрессия
+Идеально для: классика, джаз, музыка с широкой динамикой
+
+🔸 *Medium (2.0:1)* ⭐ Рекомендуется
+Сбалансированная обработка
+Идеально для: поп, рок, электроника
+
+🔶 *Heavy (3.0:1)*
+Сильная компрессия
+Идеально для: подкасты, голос, речь
+
+━━━━━━━━━━━━━━━━━━
+💡 Все режимы сохраняют естественность звука
+'''
         kb = [
-            [InlineKeyboardButton('🔹 Light (1.5:1)', callback_data='enhance_light')],
-            [InlineKeyboardButton('🔸 Medium (2.0:1) ⭐', callback_data='enhance_medium')],
-            [InlineKeyboardButton('🔶 Heavy (3.0:1)', callback_data='enhance_heavy')],
-            [InlineKeyboardButton('◀️ Назад', callback_data='back_main')]
+            [InlineKeyboardButton('🔹 Light', callback_data='enhance_light'), InlineKeyboardButton('🔸 Medium ⭐', callback_data='enhance_medium')],
+            [InlineKeyboardButton('🔶 Heavy', callback_data='enhance_heavy')],
+            [InlineKeyboardButton('◀️ Главное меню', callback_data='back_main')]
         ]
-        await q.edit_message_text('Уровень компрессии:', reply_markup=InlineKeyboardMarkup(kb))
+        await q.edit_message_text(txt, reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
         return
 
     if act == 'convert_menu':
+        txt = '''💾 *Выберите формат конвертации*
+
+━━━━━━━━━━━━━━━━━━
+💎 *FLAC* - Без потерь
+Максимальное качество, сжатие без потерь
+
+🎵 *MP3* - 320 kbps
+Высокое качество, универсальная совместимость
+
+🎶 *OGG Vorbis* - q10
+Отличное качество, открытый формат
+
+📻 *WAV* - PCM
+Несжатый формат, студийное качество
+
+━━━━━━━━━━━━━━━━━━'''
         kb = [
-            [InlineKeyboardButton('💎 FLAC (без потерь)', callback_data='convert_flac')],
-            [InlineKeyboardButton('🎵 MP3 320kbps', callback_data='convert_mp3')],
-            [InlineKeyboardButton('🎶 OGG Vorbis q10', callback_data='convert_ogg')],
-            [InlineKeyboardButton('📻 WAV (PCM)', callback_data='convert_wav')],
-            [InlineKeyboardButton('◀️ Назад', callback_data='back_main')]
+            [InlineKeyboardButton('💎 FLAC', callback_data='convert_flac'), InlineKeyboardButton('🎵 MP3', callback_data='convert_mp3')],
+            [InlineKeyboardButton('🎶 OGG', callback_data='convert_ogg'), InlineKeyboardButton('📻 WAV', callback_data='convert_wav')],
+            [InlineKeyboardButton('◀️ Главное меню', callback_data='back_main')]
         ]
-        await q.edit_message_text('Формат:', reply_markup=InlineKeyboardMarkup(kb))
+        await q.edit_message_text(txt, reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
         return
 
     if act == 'back_main':
+        user_name = q.from_user.first_name or "друг"
+        txt = f'''🎵 *Главное меню*
+
+Привет, {user_name}! 👋
+
+📤 Отправьте аудиофайл и выберите действие:
+'''
         kb = [
+            [InlineKeyboardButton('🚀 Полная обработка', callback_data='full_process')],
             [InlineKeyboardButton('📊 Анализ', callback_data='analyze'), InlineKeyboardButton('📈 Спектр', callback_data='spectrum')],
-            [InlineKeyboardButton('✨ Улучшить', callback_data='enhance_menu'), InlineKeyboardButton('🔊 Норм.', callback_data='normalize')],
-            [InlineKeyboardButton('💾 Конверт', callback_data='convert_menu'), InlineKeyboardButton('🚀 Полная', callback_data='full_process')]
+            [InlineKeyboardButton('✨ Улучшить звук', callback_data='enhance_menu'), InlineKeyboardButton('🔊 Нормализация', callback_data='normalize')],
+            [InlineKeyboardButton('🎵 Моно→Стерео', callback_data='mono_to_stereo'), InlineKeyboardButton('💾 Конвертер', callback_data='convert_menu')],
+            [InlineKeyboardButton('📚 Помощь', callback_data='help'), InlineKeyboardButton('📈 Статистика', callback_data='stats')]
         ]
-        await q.edit_message_text('Выберите:', reply_markup=InlineKeyboardMarkup(kb))
+        await q.edit_message_text(txt, reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
         return
 
     if uid not in user_data: user_data[uid] = {}
     user_data[uid]['action'] = act
 
-    names = {
-        'analyze': '📊 Анализ', 'spectrum': '📈 Спектр',
-        'enhance_light': '✨ Light (1.5:1)', 'enhance_medium': '✨ Medium (2.0:1)', 'enhance_heavy': '✨ Heavy (3.0:1)',
-        'normalize': '🔊 Нормализация', 'mono_to_stereo': '🎵 Стерео',
-        'convert_flac': '💾 FLAC', 'convert_mp3': '💾 MP3', 'convert_ogg': '💾 OGG', 'convert_wav': '💾 WAV',
-        'full_process': '🚀 Полная'
+    messages = {
+        'analyze': '📊 *Детальный анализ*\n\nОтправьте аудиофайл, и я проанализирую:\n• Частоту и битность\n• Динамику и качество\n• Уровень громкости (LUFS)',
+        'spectrum': '📈 *Частотный спектр*\n\nОтправьте аудиофайл, и я покажу:\n• Форму волны\n• Частотный спектр (20Hz-20kHz)',
+        'enhance_light': '✨ *Улучшение: Light (1.5:1)*\n\nСамая мягкая компрессия\nИдеально для: классика, джаз\n\nОтправьте аудиофайл ⬇️',
+        'enhance_medium': '✨ *Улучшение: Medium (2.0:1)* ⭐\n\nСбалансированная обработка\nИдеально для: поп, рок, электроника\n\nОтправьте аудиофайл ⬇️',
+        'enhance_heavy': '✨ *Улучшение: Heavy (3.0:1)*\n\nСильная компрессия\nИдеально для: подкасты, голос\n\nОтправьте аудиофайл ⬇️',
+        'normalize': '🔊 *Нормализация громкости*\n\nТочная настройка до -16 LUFS\n(стандарт Spotify, YouTube)\n\nОтправьте аудиофайл ⬇️',
+        'mono_to_stereo': '🎵 *Моно → Стерео*\n\nПреобразование моно-записи в стерео\n\nОтправьте аудиофайл ⬇️',
+        'convert_flac': '💎 *Конвертация в FLAC*\n\nБез потерь качества\nМаксимальное сжатие\n\nОтправьте аудиофайл ⬇️',
+        'convert_mp3': '🎵 *Конвертация в MP3*\n\n320 kbps (высокое качество)\nУниверсальная совместимость\n\nОтправьте аудиофайл ⬇️',
+        'convert_ogg': '🎶 *Конвертация в OGG*\n\nVorbis q10 (отличное качество)\nОткрытый формат\n\nОтправьте аудиофайл ⬇️',
+        'convert_wav': '📻 *Конвертация в WAV*\n\nPCM без сжатия\nСтудийное качество\n\nОтправьте аудиофайл ⬇️',
+        'full_process': '🚀 *Полная обработка*\n\nВключает:\n✅ Моно → Стерео\n✅ Мягкая компрессия (2:1)\n✅ Нормализация (-16 LUFS)\n✅ Экспорт в FLAC\n✅ Графики и анализ\n\nОтправьте аудиофайл ⬇️'
     }
-    await q.edit_message_text(f'*{names.get(act, act)}*\n\nОтправьте аудио', parse_mode='Markdown')
+
+    txt = messages.get(act, f'*{act}*\n\nОтправьте аудиофайл')
+    kb = [[InlineKeyboardButton('◀️ Главное меню', callback_data='back_main')]]
+    await q.edit_message_text(txt, reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
 
 async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.message.from_user.id
