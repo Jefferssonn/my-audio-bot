@@ -708,6 +708,21 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         logger.info(f'Загружено: {fname}, {dur:.1f}с, {audio.frame_rate}Hz, {audio.sample_width*8}bit, {audio.channels}ch')
 
+        # Проверка длины файла (максимум 3 минуты для стабильной работы)
+        MAX_DURATION_SECONDS = 180  # 3 минуты
+        if dur > MAX_DURATION_SECONDS:
+            await update.message.reply_text(
+                f'❌ *Файл слишком длинный: {dur/60:.1f} минут*\n\n'
+                f'Максимальная длина: *{MAX_DURATION_SECONDS/60:.0f} минут*\n\n'
+                f'💡 Попробуйте:\n'
+                f'• Обрезать файл до {MAX_DURATION_SECONDS/60:.0f} минут\n'
+                f'• Отправить более короткий фрагмент\n'
+                f'• Разделить на несколько частей',
+                parse_mode='Markdown'
+            )
+            if inp and os.path.exists(inp): os.remove(inp)
+            return
+
         update_stats(uid, act)
 
         if act == 'analyze':
