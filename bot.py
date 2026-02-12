@@ -329,9 +329,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 '''
 
     kb = [
-        [InlineKeyboardButton('🚀 Полная обработка', callback_data='full_process')],
+        [InlineKeyboardButton('🚀 Полная обработка', callback_data='full_process_ask')],
         [InlineKeyboardButton('📊 Анализ', callback_data='analyze'), InlineKeyboardButton('📈 Спектр', callback_data='spectrum')],
-        [InlineKeyboardButton('✨ Улучшить звук', callback_data='enhance_menu'), InlineKeyboardButton('🔊 Нормализация', callback_data='normalize')],
+        [InlineKeyboardButton('✨ Улучшить звук', callback_data='enhance_menu'), InlineKeyboardButton('🔊 Нормализация', callback_data='normalize_ask')],
         [InlineKeyboardButton('🎵 Моно→Стерео', callback_data='mono_to_stereo'), InlineKeyboardButton('💾 Конвертер', callback_data='convert_menu')],
         [InlineKeyboardButton('📚 Помощь', callback_data='help'), InlineKeyboardButton('📈 Статистика', callback_data='stats')]
     ]
@@ -456,8 +456,95 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 💡 Все режимы сохраняют естественность звука
 '''
         kb = [
-            [InlineKeyboardButton('🔹 Light', callback_data='enhance_light'), InlineKeyboardButton('🔸 Medium ⭐', callback_data='enhance_medium')],
-            [InlineKeyboardButton('🔶 Heavy', callback_data='enhance_heavy')],
+            [InlineKeyboardButton('🔹 Light', callback_data='enhance_light_ask'), InlineKeyboardButton('🔸 Medium ⭐', callback_data='enhance_medium_ask')],
+            [InlineKeyboardButton('🔶 Heavy', callback_data='enhance_heavy_ask')],
+            [InlineKeyboardButton('◀️ Главное меню', callback_data='back_main')]
+        ]
+        await q.edit_message_text(txt, reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
+        return
+
+    # Выбор формата для улучшения
+    if act in ['enhance_light_ask', 'enhance_medium_ask', 'enhance_heavy_ask']:
+        level = act.replace('_ask', '').replace('enhance_', '')
+        level_names = {'light': 'Light (1.5:1)', 'medium': 'Medium (2.0:1) ⭐', 'heavy': 'Heavy (3.0:1)'}
+
+        txt = f'''✨ *Улучшение: {level_names[level]}*
+
+💾 *Выберите формат сохранения:*
+
+━━━━━━━━━━━━━━━━━━
+💎 *FLAC* - Без потерь (рекомендуется)
+Максимальное качество, размер ~30-50% от WAV
+
+🎵 *MP3* - 320 kbps
+Высокое качество, компактный размер
+
+🎶 *OGG* - Vorbis q10
+Отличное качество, открытый формат
+
+📻 *WAV* - PCM
+Несжатый, студийное качество
+━━━━━━━━━━━━━━━━━━'''
+
+        kb = [
+            [InlineKeyboardButton('💎 FLAC ⭐', callback_data=f'enhance_{level}_flac'), InlineKeyboardButton('🎵 MP3', callback_data=f'enhance_{level}_mp3')],
+            [InlineKeyboardButton('🎶 OGG', callback_data=f'enhance_{level}_ogg'), InlineKeyboardButton('📻 WAV', callback_data=f'enhance_{level}_wav')],
+            [InlineKeyboardButton('◀️ Назад', callback_data='enhance_menu')]
+        ]
+        await q.edit_message_text(txt, reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
+        return
+
+    # Выбор формата для нормализации
+    if act == 'normalize_ask':
+        txt = '''🔊 *Нормализация громкости*
+
+💾 *Выберите формат сохранения:*
+
+━━━━━━━━━━━━━━━━━━
+💎 *FLAC* - Без потерь (рекомендуется)
+Максимальное качество
+
+🎵 *MP3* - 320 kbps
+Высокое качество, компактный размер
+
+🎶 *OGG* - Vorbis q10
+Отличное качество, открытый формат
+
+📻 *WAV* - PCM
+Несжатый, студийное качество
+━━━━━━━━━━━━━━━━━━'''
+
+        kb = [
+            [InlineKeyboardButton('💎 FLAC ⭐', callback_data='normalize_flac'), InlineKeyboardButton('🎵 MP3', callback_data='normalize_mp3')],
+            [InlineKeyboardButton('🎶 OGG', callback_data='normalize_ogg'), InlineKeyboardButton('📻 WAV', callback_data='normalize_wav')],
+            [InlineKeyboardButton('◀️ Главное меню', callback_data='back_main')]
+        ]
+        await q.edit_message_text(txt, reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
+        return
+
+    # Выбор формата для полной обработки
+    if act == 'full_process_ask':
+        txt = '''🚀 *Полная обработка*
+
+💾 *Выберите формат сохранения:*
+
+━━━━━━━━━━━━━━━━━━
+💎 *FLAC* - Без потерь (рекомендуется)
+Lossless качество для максимального результата
+
+🎵 *MP3* - 320 kbps
+Универсальная совместимость
+
+🎶 *OGG* - Vorbis q10
+Открытый формат с отличным качеством
+
+📻 *WAV* - PCM
+Несжатый формат
+━━━━━━━━━━━━━━━━━━'''
+
+        kb = [
+            [InlineKeyboardButton('💎 FLAC ⭐', callback_data='full_process_flac'), InlineKeyboardButton('🎵 MP3', callback_data='full_process_mp3')],
+            [InlineKeyboardButton('🎶 OGG', callback_data='full_process_ogg'), InlineKeyboardButton('📻 WAV', callback_data='full_process_wav')],
             [InlineKeyboardButton('◀️ Главное меню', callback_data='back_main')]
         ]
         await q.edit_message_text(txt, reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
@@ -497,9 +584,9 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 📤 Отправьте аудиофайл и выберите действие:
 '''
         kb = [
-            [InlineKeyboardButton('🚀 Полная обработка', callback_data='full_process')],
+            [InlineKeyboardButton('🚀 Полная обработка', callback_data='full_process_ask')],
             [InlineKeyboardButton('📊 Анализ', callback_data='analyze'), InlineKeyboardButton('📈 Спектр', callback_data='spectrum')],
-            [InlineKeyboardButton('✨ Улучшить звук', callback_data='enhance_menu'), InlineKeyboardButton('🔊 Нормализация', callback_data='normalize')],
+            [InlineKeyboardButton('✨ Улучшить звук', callback_data='enhance_menu'), InlineKeyboardButton('🔊 Нормализация', callback_data='normalize_ask')],
             [InlineKeyboardButton('🎵 Моно→Стерео', callback_data='mono_to_stereo'), InlineKeyboardButton('💾 Конвертер', callback_data='convert_menu')],
             [InlineKeyboardButton('📚 Помощь', callback_data='help'), InlineKeyboardButton('📈 Статистика', callback_data='stats')]
         ]
@@ -509,20 +596,37 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if uid not in user_data: user_data[uid] = {}
     user_data[uid]['action'] = act
 
+    # Генерация сообщений для действий с форматами
+    format_icons = {'flac': '💎', 'mp3': '🎵', 'ogg': '🎶', 'wav': '📻'}
+    format_names = {'flac': 'FLAC (без потерь)', 'mp3': 'MP3 320kbps', 'ogg': 'OGG Vorbis', 'wav': 'WAV PCM'}
+
     messages = {
         'analyze': '📊 *Детальный анализ*\n\nОтправьте аудиофайл, и я проанализирую:\n• Частоту и битность\n• Динамику и качество\n• Уровень громкости (LUFS)',
         'spectrum': '📈 *Частотный спектр*\n\nОтправьте аудиофайл, и я покажу:\n• Форму волны\n• Частотный спектр (20Hz-20kHz)',
-        'enhance_light': '✨ *Улучшение: Light (1.5:1)*\n\nСамая мягкая компрессия\nИдеально для: классика, джаз\n\nОтправьте аудиофайл ⬇️',
-        'enhance_medium': '✨ *Улучшение: Medium (2.0:1)* ⭐\n\nСбалансированная обработка\nИдеально для: поп, рок, электроника\n\nОтправьте аудиофайл ⬇️',
-        'enhance_heavy': '✨ *Улучшение: Heavy (3.0:1)*\n\nСильная компрессия\nИдеально для: подкасты, голос\n\nОтправьте аудиофайл ⬇️',
-        'normalize': '🔊 *Нормализация громкости*\n\nТочная настройка до -16 LUFS\n(стандарт Spotify, YouTube)\n\nОтправьте аудиофайл ⬇️',
         'mono_to_stereo': '🎵 *Моно → Стерео*\n\nПреобразование моно-записи в стерео\n\nОтправьте аудиофайл ⬇️',
         'convert_flac': '💎 *Конвертация в FLAC*\n\nБез потерь качества\nМаксимальное сжатие\n\nОтправьте аудиофайл ⬇️',
         'convert_mp3': '🎵 *Конвертация в MP3*\n\n320 kbps (высокое качество)\nУниверсальная совместимость\n\nОтправьте аудиофайл ⬇️',
         'convert_ogg': '🎶 *Конвертация в OGG*\n\nVorbis q10 (отличное качество)\nОткрытый формат\n\nОтправьте аудиофайл ⬇️',
-        'convert_wav': '📻 *Конвертация в WAV*\n\nPCM без сжатия\nСтудийное качество\n\nОтправьте аудиофайл ⬇️',
-        'full_process': '🚀 *Полная обработка*\n\nВключает:\n✅ Моно → Стерео\n✅ Мягкая компрессия (2:1)\n✅ Нормализация (-16 LUFS)\n✅ Экспорт в FLAC\n✅ Графики и анализ\n\nОтправьте аудиофайл ⬇️'
+        'convert_wav': '📻 *Конвертация в WAV*\n\nPCM без сжатия\nСтудийное качество\n\nОтправьте аудиофайл ⬇️'
     }
+
+    # Для действий с улучшением
+    if act.startswith('enhance_') and '_' in act:
+        parts = act.split('_')
+        if len(parts) == 3:  # enhance_level_format
+            level, fmt = parts[1], parts[2]
+            level_names = {'light': 'Light (1.5:1)', 'medium': 'Medium (2.0:1)', 'heavy': 'Heavy (3.0:1)'}
+            messages[act] = f'✨ *Улучшение: {level_names[level]}*\n\n{format_icons[fmt]} Формат: {format_names[fmt]}\n\nОтправьте аудиофайл ⬇️'
+
+    # Для нормализации с форматом
+    if act.startswith('normalize_') and act != 'normalize':
+        fmt = act.split('_')[1]
+        messages[act] = f'🔊 *Нормализация громкости*\n\n{format_icons[fmt]} Формат: {format_names[fmt]}\nЦель: -16 LUFS\n\nОтправьте аудиофайл ⬇️'
+
+    # Для полной обработки с форматом
+    if act.startswith('full_process_') and act != 'full_process':
+        fmt = act.split('_')[2]
+        messages[act] = f'🚀 *Полная обработка*\n\n{format_icons[fmt]} Формат: {format_names[fmt]}\n\nВключает:\n✅ Моно → Стерео\n✅ Мягкая компрессия (2:1)\n✅ Нормализация (-16 LUFS)\n✅ Графики и анализ\n\nОтправьте аудиофайл ⬇️'
 
     txt = messages.get(act, f'*{act}*\n\nОтправьте аудиофайл')
     kb = [[InlineKeyboardButton('◀️ Главное меню', callback_data='back_main')]]
@@ -588,17 +692,27 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
             s = AudioProcessor.analyze_audio(audio)
             await update.message.reply_photo(photo=spec, caption=f'📈 *Спектр*\n\n{s["sample_rate"]} Hz\n{s["dynamic_range"]:.1f} dB', parse_mode='Markdown')
 
-        elif act == 'normalize':
+        elif act.startswith('normalize_'):
+            fmt = act.split('_')[1] if '_' in act else 'flac'
             before = AudioProcessor.analyze_audio(audio)
             await update.message.reply_text('🔊 Нормализация...')
             norm = AudioProcessor.normalize_loudness(audio, -16)
             after = AudioProcessor.analyze_audio(norm)
 
-            outp = FileManager.get_safe_path(uid, 'out', '.flac')
-            norm.export(outp, format='flac', parameters=["-compression_level", "8"])
+            outp = FileManager.get_safe_path(uid, 'out', f'.{fmt}')
+
+            # Экспорт в выбранный формат
+            if fmt == 'mp3':
+                norm.export(outp, format='mp3', bitrate='320k', parameters=["-q:a", "0"])
+            elif fmt == 'ogg':
+                norm.export(outp, format='ogg', codec='libvorbis', parameters=["-qscale:a", "10"])
+            elif fmt == 'wav':
+                norm.export(outp, format='wav')
+            else:  # flac
+                norm.export(outp, format='flac', parameters=["-compression_level", "8"])
 
             with open(outp, 'rb') as f:
-                await update.message.reply_audio(audio=f, filename=os.path.splitext(fname)[0]+'_NORM.flac', caption=f'🔊 *Нормализовано*\n\n📉 До: {before["lufs"]} LUFS\n📈 После: {after["lufs"]} LUFS', parse_mode='Markdown')
+                await update.message.reply_audio(audio=f, filename=os.path.splitext(fname)[0]+f'_NORM.{fmt}', caption=f'🔊 *Нормализовано*\n\n📉 До: {before["lufs"]} LUFS\n📈 После: {after["lufs"]} LUFS\n💾 Формат: {fmt.upper()}', parse_mode='Markdown')
 
         elif act == 'mono_to_stereo':
             if audio.channels == 1:
@@ -611,15 +725,27 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text('ℹ️ Уже стерео')
 
         elif act.startswith('enhance_'):
-            lvl = act.split('_')[1]
+            parts = act.split('_')
+            lvl = parts[1]
+            fmt = parts[2] if len(parts) >= 3 else 'flac'
+
             before = AudioProcessor.analyze_audio(audio)
             await update.message.reply_text(f'✨ Мягкое улучшение ({lvl})...')
 
             enh = AudioProcessor.enhance_audio(audio, lvl)
             after = AudioProcessor.analyze_audio(enh)
 
-            outp = FileManager.get_safe_path(uid, 'out', '.flac')
-            enh.export(outp, format='flac', parameters=["-compression_level", "8"])
+            outp = FileManager.get_safe_path(uid, 'out', f'.{fmt}')
+
+            # Экспорт в выбранный формат
+            if fmt == 'mp3':
+                enh.export(outp, format='mp3', bitrate='320k', parameters=["-q:a", "0"])
+            elif fmt == 'ogg':
+                enh.export(outp, format='ogg', codec='libvorbis', parameters=["-qscale:a", "10"])
+            elif fmt == 'wav':
+                enh.export(outp, format='wav')
+            else:  # flac
+                enh.export(outp, format='flac', parameters=["-compression_level", "8"])
 
             chart = AudioProcessor.create_comparison_chart(before, after)
             await update.message.reply_photo(photo=chart, caption=f'📊 Результат')
@@ -627,8 +753,8 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ratio_map = {'light': '1.5:1', 'medium': '2.0:1', 'heavy': '3.0:1'}
 
             with open(outp, 'rb') as f:
-                await update.message.reply_audio(audio=f, filename=os.path.splitext(fname)[0]+f'_[{lvl.upper()}].flac',
-                    caption=f'✅ *Улучшено ({ratio_map[lvl]})*\n\n📊 Качество: {before["quality"]}% → {after["quality"]}%\n🎚 Динамика: {before["dynamic_range"]:.1f} → {after["dynamic_range"]:.1f} dB\n🔉 LUFS: {before["lufs"]} → {after["lufs"]}',
+                await update.message.reply_audio(audio=f, filename=os.path.splitext(fname)[0]+f'_[{lvl.upper()}].{fmt}',
+                    caption=f'✅ *Улучшено ({ratio_map[lvl]})*\n\n📊 Качество: {before["quality"]}% → {after["quality"]}%\n🎚 Динамика: {before["dynamic_range"]:.1f} → {after["dynamic_range"]:.1f} dB\n🔉 LUFS: {before["lufs"]} → {after["lufs"]}\n💾 Формат: {fmt.upper()}',
                     parse_mode='Markdown')
 
         elif act.startswith('convert_'):
@@ -649,7 +775,9 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
             with open(outp, 'rb') as f:
                 await update.message.reply_audio(audio=f, filename=os.path.splitext(fname)[0]+f'.{fmt}', caption=f'💾 *{fmt.upper()}*', parse_mode='Markdown')
 
-        elif act == 'full_process':
+        elif act.startswith('full_process_'):
+            fmt = act.split('_')[2] if len(act.split('_')) >= 3 else 'flac'
+
             if dur > 300:
                 await update.message.reply_text('⚠️ Файл > 5 мин\n\nИспользуйте отдельные функции')
                 if inp and os.path.exists(inp): os.remove(inp)
@@ -667,9 +795,18 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             after = AudioProcessor.analyze_audio(enh)
 
-            outp = FileManager.get_safe_path(uid, 'out', '.flac')
-            await update.message.reply_text('💾 Экспорт FLAC...')
-            enh.export(outp, format='flac', parameters=["-compression_level", "8"])
+            outp = FileManager.get_safe_path(uid, 'out', f'.{fmt}')
+            await update.message.reply_text(f'💾 Экспорт {fmt.upper()}...')
+
+            # Экспорт в выбранный формат
+            if fmt == 'mp3':
+                enh.export(outp, format='mp3', bitrate='320k', parameters=["-q:a", "0"])
+            elif fmt == 'ogg':
+                enh.export(outp, format='ogg', codec='libvorbis', parameters=["-qscale:a", "10"])
+            elif fmt == 'wav':
+                enh.export(outp, format='wav')
+            else:  # flac
+                enh.export(outp, format='flac', parameters=["-compression_level", "8"])
 
             if dur <= 120:
                 try:
@@ -684,8 +821,8 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             await update.message.reply_text('📤 Отправка...')
             with open(outp, 'rb') as f:
-                await update.message.reply_audio(audio=f, filename=os.path.splitext(fname)[0]+'_[PRO-v2.2].flac',
-                    caption=f'✅ *PRO v2.2!*\n\n📊 Качество: {before["quality"]}% → {after["quality"]}%\n🎵 {"Моно" if before["is_mono"] else "Стерeo"} → Стерео\n🎚 Динамика: {before["dynamic_range"]:.1f} → {after["dynamic_range"]:.1f} dB\n🔉 LUFS: {before["lufs"]} → {after["lufs"]}\n\n✨ Мягкая компрессия 2:1',
+                await update.message.reply_audio(audio=f, filename=os.path.splitext(fname)[0]+f'_[PRO-v2.2].{fmt}',
+                    caption=f'✅ *PRO v2.2!*\n\n📊 Качество: {before["quality"]}% → {after["quality"]}%\n🎵 {"Моно" if before["is_mono"] else "Стерeo"} → Стерео\n🎚 Динамика: {before["dynamic_range"]:.1f} → {after["dynamic_range"]:.1f} dB\n🔉 LUFS: {before["lufs"]} → {after["lufs"]}\n💾 Формат: {fmt.upper()}\n\n✨ Мягкая компрессия 2:1',
                     parse_mode='Markdown', read_timeout=180, write_timeout=180)
 
             await update.message.reply_text('✅ Готово!')
