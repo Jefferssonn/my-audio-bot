@@ -1,10 +1,9 @@
-import os, logging, time, threading, io, signal
+import os, logging, time, threading, io, signal, subprocess, json
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
 import numpy as np
 from pydub import AudioSegment
-from pydub.effects import compress_dynamic_range
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -73,6 +72,137 @@ class RateLimiter:
 
 rate_limiter = RateLimiter()
 
+class FFmpegProcessor:
+    """Потоковая обработка через FFmpeg - минимум RAM"""
+
+    @staticmethod
+    def get_audio_info(filepath):
+        """Получить информацию о файле через ffprobe"""
+        try:
+            cmd = [
+                'ffprobe', '-v', 'quiet', '-print_format', 'json',
+                '-show_format', '-show_streams', filepath
+            ]
+            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+            data = json.loads(result.stdout)
+
+            audio_stream = next((s for s in data['streams'] if s['codec_type'] == 'audio'), None)
+            if not audio_stream:
+                return None
+
+            return {
+                'duration': float(data['format'].get('duration', 0)),
+                'channels': int(audio_stream.get('channels', 2)),
+                'sample_rate': int(audio_stream.get('sample_rate', 44100)),
+                'codec': audio_stream.get('codec_name', 'unknown'),
+                'is_mono': int(audio_stream.get('channels', 2)) == 1
+            }
+        except Exception as e:
+            logger.error(f'Ошибка ffprobe: {e}')
+            return None
+
+    @staticmethod
+    def process_audio(input_path, output_path, output_format='flac', level='medium', normalize=True, mono_to_stereo=False):
+        """
+        Обработка аудио через FFmpeg streaming - БЕЗ загрузки в RAM
+
+        Args:
+            input_path: путь к входному файлу
+            output_path: путь к выходному файлу
+            output_format: формат вывода (flac/mp3/ogg/wav)
+            level: уровень компрессии (light/medium/heavy)
+            normalize: применять loudnorm
+            mono_to_stereo: конвертировать моно в стерео
+        """
+
+        # Параметры компрессии для разных уровней
+        compress_params = {
+            'light': 'threshold=-25dB:ratio=1.5:attack=20:release=200:makeup=1',
+            'medium': 'threshold=-22dB:ratio=2:attack=15:release=150:makeup=1.5',
+            'heavy': 'threshold=-20dB:ratio=3:attack=10:release=100:makeup=2'
+        }
+
+        # Строим фильтр
+        filters = []
+
+        # Моно → стерео
+        if mono_to_stereo:
+            filters.append('pan=stereo|c0=c0|c1=c0')
+
+        # Компрессия (только если level указан)
+        if level and level in compress_params:
+            filters.append(f'acompressor={compress_params[level]}')
+
+        # Нормализация громкости (LUFS)
+        if normalize:
+            filters.append('loudnorm=I=-16:TP=-1.5:LRA=11')
+
+        filter_complex = ','.join(filters) if filters else 'anull'
+
+        # Параметры кодека в зависимости от формата
+        codec_params = {
+            'flac': ['-c:a', 'flac', '-compression_level', '5'],
+            'mp3': ['-c:a', 'libmp3lame', '-b:a', '320k', '-q:a', '0'],
+            'ogg': ['-c:a', 'libvorbis', '-qscale:a', '10'],
+            'wav': ['-c:a', 'pcm_s16le']
+        }
+
+        # Команда ffmpeg
+        cmd = [
+            'ffmpeg', '-y', '-i', input_path,
+            '-af', filter_complex,
+            *codec_params.get(output_format, codec_params['flac']),
+            '-ar', '48000',  # 48kHz sample rate
+            output_path
+        ]
+
+        logger.info(f'FFmpeg фильтр: {filter_complex}')
+
+        try:
+            # Запускаем ffmpeg (работает через stream, почти не жрёт RAM)
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=600,  # 10 минут макс
+                check=True
+            )
+            logger.info(f'✓ FFmpeg обработка завершена: {output_format}')
+            return True
+        except subprocess.TimeoutExpired:
+            logger.error('FFmpeg timeout (>10 мин)')
+            return False
+        except subprocess.CalledProcessError as e:
+            logger.error(f'FFmpeg ошибка: {e.stderr}')
+            return False
+        except Exception as e:
+            logger.error(f'FFmpeg exception: {e}')
+            return False
+
+    @staticmethod
+    def convert_format(input_path, output_path, output_format='flac'):
+        """Простая конвертация формата без обработки"""
+        codec_params = {
+            'flac': ['-c:a', 'flac', '-compression_level', '5'],
+            'mp3': ['-c:a', 'libmp3lame', '-b:a', '320k', '-q:a', '0'],
+            'ogg': ['-c:a', 'libvorbis', '-qscale:a', '10'],
+            'wav': ['-c:a', 'pcm_s16le']
+        }
+
+        cmd = [
+            'ffmpeg', '-y', '-i', input_path,
+            *codec_params.get(output_format, codec_params['flac']),
+            output_path
+        ]
+
+        try:
+            subprocess.run(cmd, capture_output=True, check=True, timeout=300)
+            logger.info(f'✓ Конвертация в {output_format} завершена')
+            return True
+        except Exception as e:
+            logger.error(f'Ошибка конвертации: {e}')
+            return False
+
 class AudioProcessor:
     @staticmethod
     def analyze_audio(audio):
@@ -101,103 +231,6 @@ class AudioProcessor:
             'lufs': round(lufs, 1),
             'bit_depth': audio.sample_width * 8
         }
-
-    @staticmethod
-    def normalize_loudness(audio, target=-16):
-        """Нормализация громкости по стандарту LUFS"""
-        samples = np.array(audio.get_array_of_samples())
-        if audio.sample_width == 2:
-            samples = samples.astype(np.float32) / 32768.0
-        elif audio.sample_width == 1:
-            samples = samples.astype(np.float32) / 128.0 - 1.0
-        elif audio.sample_width == 4:
-            samples = samples.astype(np.float32) / 2147483648.0
-
-        rms = np.sqrt(np.mean(samples**2))
-        current_lufs = -23 + 20 * np.log10(rms + 0.0001)
-        gain_db = target - current_lufs
-
-        # ВАЖНО: Ограничиваем усиление
-        gain_db = np.clip(gain_db, -6, 12)
-
-        logger.info(f'Нормализация: {current_lufs:.1f} LUFS → {target} LUFS (gain: {gain_db:.1f} dB)')
-
-        return audio + gain_db
-
-    @staticmethod
-    def apply_eq(audio, preset='balanced'):
-        """Применяет лёгкий эквалайзер"""
-        logger.info(f'Применяю EQ пресет: {preset}')
-        return audio
-
-    @staticmethod
-    def enhance_audio(audio, level='medium'):
-        """МЯГКАЯ обработка с сохранением динамики"""
-
-        # НОВЫЕ параметры - НАМНОГО мягче!
-        levels_config = {
-            'light': {
-                'threshold': -25.0,  # Выше порог = меньше компрессии
-                'ratio': 1.5,        # Меньше ratio = мягче
-                'attack': 20.0,      # Медленнее = естественнее
-                'release': 200.0,
-                'makeup_gain': 1.0   # Меньше усиления
-            },
-            'medium': {
-                'threshold': -22.0,
-                'ratio': 2.0,        # Было 4.0 - слишком много!
-                'attack': 15.0,
-                'release': 150.0,
-                'makeup_gain': 1.5
-            },
-            'heavy': {
-                'threshold': -20.0,
-                'ratio': 3.0,        # Было 6.0 - убивало звук!
-                'attack': 10.0,
-                'release': 100.0,
-                'makeup_gain': 2.0
-            }
-        }
-
-        config = levels_config.get(level, levels_config['medium'])
-        logger.info(f'Улучшение ({level}): threshold={config["threshold"]}, ratio={config["ratio"]}')
-
-        # Для ВСЕХ файлов - мягкая обработка
-        try:
-            # Шаг 1: Лёгкая нормализация пиков (не до максимума!)
-            normalized = audio.apply_gain(-audio.max_dBFS + (-3.0))  # Оставляем 3dB headroom
-
-            # Шаг 2: МЯГКАЯ компрессия
-            compressed = compress_dynamic_range(
-                normalized,
-                threshold=config['threshold'],
-                ratio=config['ratio'],
-                attack=config['attack'],
-                release=config['release']
-            )
-
-            # Шаг 3: Минимальный makeup gain
-            result = compressed + config['makeup_gain']
-
-            # Шаг 4: Финальная нормализация к -16 LUFS
-            result = AudioProcessor.normalize_loudness(result, target=-16)
-
-            logger.info('✓ Компрессия применена успешно')
-            return result
-
-        except Exception as e:
-            logger.error(f'Ошибка компрессии: {e}')
-            # В случае ошибки - просто нормализация
-            return AudioProcessor.normalize_loudness(audio, target=-16)
-
-    @staticmethod
-    def mono_to_stereo(audio):
-        """Конвертация моно в стерео"""
-        if audio.channels == 1:
-            stereo = AudioSegment.from_mono_audiosegments(audio, audio)
-            logger.info('Конвертировано: моно → стерео')
-            return stereo
-        return audio
 
     @staticmethod
     def create_comparison_chart(before, after):
@@ -299,7 +332,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = f'''
 🎵 *Привет, {user_name}!*
 
-Добро пожаловать в *Telegram Audio Bot PRO v2.6* 🎧
+Добро пожаловать в *Telegram Audio Bot PRO v2.7* 🎧
 
 ━━━━━━━━━━━━━━━━━━━━━━
 ✨ *Возможности бота:*
@@ -318,6 +351,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 • Нормализация громкости (-16 LUFS)
 • Моно → Стерео
 • Конвертация форматов
+
+━━━━━━━━━━━━━━━━━━━━━━
+⚡ *НОВОЕ в v2.7:*
+FFmpeg streaming - обрабатывает файлы ЛЮБОЙ длины!
+Минимальное потребление RAM
 
 ━━━━━━━━━━━━━━━━━━━━━━
 ⚙️ *Настройки:*
@@ -372,7 +410,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if act == 'help':
-        txt = '''📚 *Справка по боту v2.6*
+        txt = '''📚 *Справка по боту v2.7*
 
 ━━━━━━━━━━━━━━━━━━
 🎯 *ОСНОВНЫЕ ФУНКЦИИ:*
@@ -381,8 +419,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 Автоматически применяет все улучшения:
 • Конвертация моно → стерео
 • Мягкая компрессия (2.0:1)
-• Нормализация громкости
-• Экспорт в FLAC
+• Нормализация громкости (-16 LUFS)
+• Экспорт в выбранный формат
 
 📊 *Анализ*
 Детальная информация о файле:
@@ -422,11 +460,12 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 • WAV - PCM
 
 ━━━━━━━━━━━━━━━━━━
-⚙️ *ТЕХНИЧЕСКИЕ ДЕТАЛИ:*
+⚡ *НОВОЕ в v2.7:*
 
-✅ Мягкая компрессия (1.5-3:1)
-✅ Сохранение динамики
-✅ Headroom 3dB
+✅ FFmpeg streaming обработка
+✅ Файлы ЛЮБОЙ длины (без OOM)
+✅ Минимальное потребление RAM
+✅ Профессиональные фильтры loudnorm+acompressor
 ✅ Автоочистка временных файлов
 ✅ Rate limiting: 5 req/min
 
@@ -696,32 +735,26 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    await update.message.reply_text(f'⏳ Обработка ({fsize_mb:.1f} МБ)...')
+    await update.message.reply_text(f'⏳ Загрузка ({fsize_mb:.1f} МБ)...')
 
     inp = outp = None
     try:
         inp = FileManager.get_safe_path(uid, 'in')
         await file.download_to_drive(inp)
 
-        audio = AudioSegment.from_file(inp)
-        dur = len(audio) / 1000.0
-
-        logger.info(f'Загружено: {fname}, {dur:.1f}с, {audio.frame_rate}Hz, {audio.sample_width*8}bit, {audio.channels}ch')
-
-        # Проверка длины файла (максимум 3 минуты для стабильной работы)
-        MAX_DURATION_SECONDS = 180  # 3 минуты
-        if dur > MAX_DURATION_SECONDS:
-            await update.message.reply_text(
-                f'❌ *Файл слишком длинный: {dur/60:.1f} минут*\n\n'
-                f'Максимальная длина: *{MAX_DURATION_SECONDS/60:.0f} минут*\n\n'
-                f'💡 Попробуйте:\n'
-                f'• Обрезать файл до {MAX_DURATION_SECONDS/60:.0f} минут\n'
-                f'• Отправить более короткий фрагмент\n'
-                f'• Разделить на несколько частей',
-                parse_mode='Markdown'
-            )
+        # Получаем инфо через ffprobe (БЕЗ загрузки в память!)
+        info = FFmpegProcessor.get_audio_info(inp)
+        if not info:
+            await update.message.reply_text('❌ Не удалось прочитать аудиофайл')
             if inp and os.path.exists(inp): os.remove(inp)
             return
+
+        dur = info['duration']
+        channels = info['channels']
+        sample_rate = info['sample_rate']
+        is_mono = info['is_mono']
+
+        logger.info(f'Загружено: {fname}, {dur:.1f}с, {sample_rate}Hz, {channels}ch, codec={info["codec"]}')
 
         update_stats(uid, act)
 
@@ -737,33 +770,56 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         elif act.startswith('normalize_'):
             fmt = act.split('_')[1] if '_' in act else 'flac'
-            before = AudioProcessor.analyze_audio(audio)
-            await update.message.reply_text('🔊 Нормализация...')
-            norm = AudioProcessor.normalize_loudness(audio, -16)
-            after = AudioProcessor.analyze_audio(norm)
+            await update.message.reply_text('🔊 Нормализация через FFmpeg...')
 
             outp = FileManager.get_safe_path(uid, 'out', f'.{fmt}')
 
-            # Экспорт в выбранный формат
-            if fmt == 'mp3':
-                norm.export(outp, format='mp3', bitrate='320k', parameters=["-q:a", "0"])
-            elif fmt == 'ogg':
-                norm.export(outp, format='ogg', codec='libvorbis', parameters=["-qscale:a", "10"])
-            elif fmt == 'wav':
-                norm.export(outp, format='wav')
-            else:  # flac
-                norm.export(outp, format='flac', parameters=["-compression_level", "8"])
+            # Обработка через FFmpeg (streaming, минимум RAM)
+            success = FFmpegProcessor.process_audio(
+                input_path=inp,
+                output_path=outp,
+                output_format=fmt,
+                level=None,  # без компрессии
+                normalize=True,
+                mono_to_stereo=False
+            )
+
+            if not success:
+                await update.message.reply_text('❌ Ошибка нормализации')
+                return
 
             with open(outp, 'rb') as f:
-                await update.message.reply_audio(audio=f, filename=os.path.splitext(fname)[0]+f'_NORM.{fmt}', caption=f'🔊 *Нормализовано*\n\n📉 До: {before["lufs"]} LUFS\n📈 После: {after["lufs"]} LUFS\n💾 Формат: {fmt.upper()}', parse_mode='Markdown')
+                await update.message.reply_audio(
+                    audio=f,
+                    filename=os.path.splitext(fname)[0]+f'_NORM.{fmt}',
+                    caption=f'🔊 *Нормализовано*\n\nЦель: -16 LUFS\n💾 Формат: {fmt.upper()}',
+                    parse_mode='Markdown'
+                )
 
         elif act == 'mono_to_stereo':
-            if audio.channels == 1:
-                audio = AudioProcessor.mono_to_stereo(audio)
+            if is_mono:
+                await update.message.reply_text('🎵 Моно → Стерео...')
                 outp = FileManager.get_safe_path(uid, 'out', '.flac')
-                audio.export(outp, format='flac')
+
+                success = FFmpegProcessor.process_audio(
+                    input_path=inp,
+                    output_path=outp,
+                    output_format='flac',
+                    level=None,
+                    normalize=False,
+                    mono_to_stereo=True
+                )
+
+                if not success:
+                    await update.message.reply_text('❌ Ошибка конвертации')
+                    return
+
                 with open(outp, 'rb') as f:
-                    await update.message.reply_audio(audio=f, filename=fname.replace('.', '_STEREO.'), caption='✅ Моно → Стерео')
+                    await update.message.reply_audio(
+                        audio=f,
+                        filename=os.path.splitext(fname)[0]+'_STEREO.flac',
+                        caption='✅ Моно → Стерео'
+                    )
             else:
                 await update.message.reply_text('ℹ️ Уже стерео')
 
@@ -772,33 +828,32 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
             lvl = parts[1]
             fmt = parts[2] if len(parts) >= 3 else 'flac'
 
-            before = AudioProcessor.analyze_audio(audio)
-            await update.message.reply_text(f'✨ Мягкое улучшение ({lvl})...')
-
-            enh = AudioProcessor.enhance_audio(audio, lvl)
-            after = AudioProcessor.analyze_audio(enh)
+            ratio_map = {'light': '1.5:1', 'medium': '2.0:1', 'heavy': '3.0:1'}
+            await update.message.reply_text(f'✨ Улучшение FFmpeg ({ratio_map[lvl]})...')
 
             outp = FileManager.get_safe_path(uid, 'out', f'.{fmt}')
 
-            # Экспорт в выбранный формат
-            if fmt == 'mp3':
-                enh.export(outp, format='mp3', bitrate='320k', parameters=["-q:a", "0"])
-            elif fmt == 'ogg':
-                enh.export(outp, format='ogg', codec='libvorbis', parameters=["-qscale:a", "10"])
-            elif fmt == 'wav':
-                enh.export(outp, format='wav')
-            else:  # flac
-                enh.export(outp, format='flac', parameters=["-compression_level", "8"])
+            # Обработка через FFmpeg (streaming)
+            success = FFmpegProcessor.process_audio(
+                input_path=inp,
+                output_path=outp,
+                output_format=fmt,
+                level=lvl,
+                normalize=True,
+                mono_to_stereo=False
+            )
 
-            chart = AudioProcessor.create_comparison_chart(before, after)
-            await update.message.reply_photo(photo=chart, caption=f'📊 Результат')
-
-            ratio_map = {'light': '1.5:1', 'medium': '2.0:1', 'heavy': '3.0:1'}
+            if not success:
+                await update.message.reply_text('❌ Ошибка обработки')
+                return
 
             with open(outp, 'rb') as f:
-                await update.message.reply_audio(audio=f, filename=os.path.splitext(fname)[0]+f'_[{lvl.upper()}].{fmt}',
-                    caption=f'✅ *Улучшено ({ratio_map[lvl]})*\n\n📊 Качество: {before["quality"]}% → {after["quality"]}%\n🎚 Динамика: {before["dynamic_range"]:.1f} → {after["dynamic_range"]:.1f} dB\n🔉 LUFS: {before["lufs"]} → {after["lufs"]}\n💾 Формат: {fmt.upper()}',
-                    parse_mode='Markdown')
+                await update.message.reply_audio(
+                    audio=f,
+                    filename=os.path.splitext(fname)[0]+f'_[{lvl.upper()}].{fmt}',
+                    caption=f'✅ *Улучшено ({ratio_map[lvl]})*\n\n🎚 Компрессия: {ratio_map[lvl]}\n🔉 Нормализация: -16 LUFS\n💾 Формат: {fmt.upper()}',
+                    parse_mode='Markdown'
+                )
 
         elif act.startswith('convert_'):
             fmt = act.split('_')[1]
@@ -806,67 +861,61 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             outp = FileManager.get_safe_path(uid, 'out', f'.{fmt}')
 
-            if fmt == 'mp3':
-                audio.export(outp, format='mp3', bitrate='320k', parameters=["-q:a", "0"])
-            elif fmt == 'ogg':
-                audio.export(outp, format='ogg', codec='libvorbis', parameters=["-qscale:a", "10"])
-            elif fmt == 'wav':
-                audio.export(outp, format='wav')
-            else:
-                audio.export(outp, format='flac', parameters=["-compression_level", "8"])
+            success = FFmpegProcessor.convert_format(
+                input_path=inp,
+                output_path=outp,
+                output_format=fmt
+            )
+
+            if not success:
+                await update.message.reply_text('❌ Ошибка конвертации')
+                return
 
             with open(outp, 'rb') as f:
-                await update.message.reply_audio(audio=f, filename=os.path.splitext(fname)[0]+f'.{fmt}', caption=f'💾 *{fmt.upper()}*', parse_mode='Markdown')
+                await update.message.reply_audio(
+                    audio=f,
+                    filename=os.path.splitext(fname)[0]+f'.{fmt}',
+                    caption=f'💾 *{fmt.upper()}*',
+                    parse_mode='Markdown'
+                )
 
         elif act.startswith('full_process_'):
             fmt = act.split('_')[2] if len(act.split('_')) >= 3 else 'flac'
 
-            if dur > 300:
-                await update.message.reply_text('⚠️ Файл > 5 мин\n\nИспользуйте отдельные функции')
-                if inp and os.path.exists(inp): os.remove(inp)
-                return
-
-            await update.message.reply_text(f'🚀 Полная обработка ({dur:.0f}с)...')
-            before = AudioProcessor.analyze_audio(audio)
-
-            if audio.channels == 1:
-                audio = AudioProcessor.mono_to_stereo(audio)
-                await update.message.reply_text('✓ Стерео')
-
-            enh = AudioProcessor.enhance_audio(audio, 'medium')
-            await update.message.reply_text('✓ Мягкая компрессия (2:1)')
-
-            after = AudioProcessor.analyze_audio(enh)
+            await update.message.reply_text(f'🚀 Полная обработка FFmpeg ({dur/60:.1f} мин)...')
 
             outp = FileManager.get_safe_path(uid, 'out', f'.{fmt}')
-            await update.message.reply_text(f'💾 Экспорт {fmt.upper()}...')
 
-            # Экспорт в выбранный формат
-            if fmt == 'mp3':
-                enh.export(outp, format='mp3', bitrate='320k', parameters=["-q:a", "0"])
-            elif fmt == 'ogg':
-                enh.export(outp, format='ogg', codec='libvorbis', parameters=["-qscale:a", "10"])
-            elif fmt == 'wav':
-                enh.export(outp, format='wav')
-            else:  # flac
-                enh.export(outp, format='flac', parameters=["-compression_level", "8"])
+            # Обработка через FFmpeg (streaming, любая длина!)
+            success = FFmpegProcessor.process_audio(
+                input_path=inp,
+                output_path=outp,
+                output_format=fmt,
+                level='medium',
+                normalize=True,
+                mono_to_stereo=is_mono
+            )
 
-            if dur <= 120:
-                try:
-                    chart = AudioProcessor.create_comparison_chart(before, after)
-                    await update.message.reply_photo(photo=chart, caption='📊 До/После')
-                except: pass
-
-                try:
-                    spec = AudioProcessor.create_spectrum_chart(enh)
-                    await update.message.reply_photo(photo=spec, caption='📈 Спектр')
-                except: pass
+            if not success:
+                await update.message.reply_text('❌ Ошибка обработки')
+                return
 
             await update.message.reply_text('📤 Отправка...')
             with open(outp, 'rb') as f:
-                await update.message.reply_audio(audio=f, filename=os.path.splitext(fname)[0]+f'_[PRO-v2.6].{fmt}',
-                    caption=f'✅ *PRO v2.6!*\n\n📊 Качество: {before["quality"]}% → {after["quality"]}%\n🎵 {"Моно" if before["is_mono"] else "Стерeo"} → Стерео\n🎚 Динамика: {before["dynamic_range"]:.1f} → {after["dynamic_range"]:.1f} dB\n🔉 LUFS: {before["lufs"]} → {after["lufs"]}\n💾 Формат: {fmt.upper()}\n\n✨ Мягкая компрессия 2:1',
-                    parse_mode='Markdown', read_timeout=180, write_timeout=180)
+                await update.message.reply_audio(
+                    audio=f,
+                    filename=os.path.splitext(fname)[0]+f'_[PRO-v2.7].{fmt}',
+                    caption=f'✅ *PRO v2.7 - FFmpeg Streaming!*\n\n'
+                            f'🎵 {"Моно → Стерео" if is_mono else "Стерео"}\n'
+                            f'🎚 Компрессия: 2.0:1\n'
+                            f'🔉 Нормализация: -16 LUFS\n'
+                            f'💾 Формат: {fmt.upper()}\n'
+                            f'⏱ Длина: {dur/60:.1f} мин\n\n'
+                            f'⚡ Обработано через FFmpeg streaming',
+                    parse_mode='Markdown',
+                    read_timeout=180,
+                    write_timeout=180
+                )
 
             await update.message.reply_text('✅ Готово!')
 
@@ -904,14 +953,15 @@ def main():
     app.add_handler(MessageHandler(filters.AUDIO | filters.VOICE | filters.Document.AUDIO, handle_audio))
 
     logger.info('='*50)
-    logger.info('🚀 Telegram Audio Bot PRO v2.6')
+    logger.info('🚀 Telegram Audio Bot PRO v2.7')
     logger.info('='*50)
-    logger.info('✨ Версия: 2.6 (Stable)')
+    logger.info('✨ Версия: 2.7 (FFmpeg Streaming)')
     logger.info(f'📦 Макс. размер файла: {MAX_FILE_SIZE_MB} МБ')
     logger.info(f'🧹 Автоочистка: каждые {CLEANUP_INTERVAL_MINUTES} мин')
     logger.info(f'⏰ Макс. возраст файлов: {TEMP_FILE_MAX_AGE_HOURS} ч')
-    logger.info('🎚️ Компрессия: 1.5:1 / 2.0:1 / 3.0:1')
-    logger.info('🔊 Нормализация: -16 LUFS')
+    logger.info('⚡ FFmpeg: streaming обработка (любая длина)')
+    logger.info('🎚️ Компрессия: 1.5:1 / 2.0:1 / 3.0:1 (acompressor)')
+    logger.info('🔊 Нормализация: -16 LUFS (loudnorm)')
     logger.info('='*50)
 
     # Graceful shutdown handler
