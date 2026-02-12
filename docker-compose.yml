@@ -9,6 +9,10 @@ services:
     environment:
       - TELEGRAM_API_ID=${TELEGRAM_API_ID}
       - TELEGRAM_API_HASH=${TELEGRAM_API_HASH}
+    command: >
+      --api-id=${TELEGRAM_API_ID}
+      --api-hash=${TELEGRAM_API_HASH}
+      --local
     volumes:
       - telegram-bot-api-data:/var/lib/telegram-bot-api
     networks:
