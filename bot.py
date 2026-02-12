@@ -19,6 +19,11 @@ TEMP_FILE_MAX_AGE_HOURS = int(os.getenv('TEMP_FILE_MAX_AGE_HOURS', 2))
 user_data = {}
 user_stats = {}
 
+# Константы для форматов
+FORMAT_ICONS = {'flac': '💎', 'mp3': '🎵', 'ogg': '🎶', 'wav': '📻'}
+FORMAT_NAMES = {'flac': 'FLAC (без потерь)', 'mp3': 'MP3 320kbps', 'ogg': 'OGG Vorbis', 'wav': 'WAV PCM'}
+RATIO_MAP = {'light': '1.5:1', 'medium': '2.0:1', 'heavy': '3.0:1'}
+
 class FileManager:
     TEMP_DIR = os.getenv('TEMP_DIR', '/app/temp')
 
@@ -52,6 +57,7 @@ class FileManager:
             while True:
                 time.sleep(CLEANUP_INTERVAL_MINUTES * 60)
                 FileManager.cleanup_old_files(max_age_hours=TEMP_FILE_MAX_AGE_HOURS)
+                cleanup_old_user_data()  # Очистка неактивных пользователей
         threading.Thread(target=cleanup_loop, daemon=True).start()
         logger.info(f'✅ Автоочистка: каждые {CLEANUP_INTERVAL_MINUTES} мин')
 
@@ -62,9 +68,16 @@ class FileManager:
 class RateLimiter:
     def __init__(self, max_req=5, window=60):
         self.max_req, self.window, self.reqs = max_req, window, {}
+        self.last_cleanup = time.time()
 
     def is_allowed(self, uid):
         now = time.time()
+
+        # Периодическая очистка старых данных (каждые 10 минут)
+        if now - self.last_cleanup > 600:
+            self.cleanup_old_data()
+            self.last_cleanup = now
+
         if uid not in self.reqs: self.reqs[uid] = []
         self.reqs[uid] = [t for t in self.reqs[uid] if now - t < self.window]
         if len(self.reqs[uid]) >= self.max_req: return False
@@ -74,6 +87,19 @@ class RateLimiter:
     def get_wait_time(self, uid):
         if uid not in self.reqs or not self.reqs[uid]: return 0
         return max(0, self.window - (time.time() - self.reqs[uid][0]))
+
+    def cleanup_old_data(self):
+        """Очистка старых записей из self.reqs"""
+        now = time.time()
+        to_delete = []
+        for uid, times in self.reqs.items():
+            # Удаляем записи старше 1 часа
+            if not times or (now - times[-1]) > 3600:
+                to_delete.append(uid)
+        for uid in to_delete:
+            del self.reqs[uid]
+        if to_delete:
+            logger.info(f'RateLimiter: Очищено {len(to_delete)} старых записей')
 
 rate_limiter = RateLimiter()
 
@@ -237,53 +263,6 @@ class AudioProcessor:
             'bit_depth': audio.sample_width * 8
         }
 
-    @staticmethod
-    def create_comparison_chart(before, after):
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
-
-        metrics = ['Качество\n(%)', 'Динамика\n(dB)', 'LUFS']
-        b_vals = [before['quality'], before['dynamic_range'], abs(before['lufs'])]
-        a_vals = [after['quality'], after['dynamic_range'], abs(after['lufs'])]
-
-        x = np.arange(len(metrics))
-        w = 0.35
-
-        bars1 = ax1.bar(x-w/2, b_vals, w, label='До', color='#ef4444', alpha=0.8)
-        bars2 = ax1.bar(x+w/2, a_vals, w, label='После', color='#10b981', alpha=0.8)
-
-        ax1.set_ylabel('Значение', fontsize=12)
-        ax1.set_title('Сравнение параметров', fontsize=14, fontweight='bold')
-        ax1.set_xticks(x)
-        ax1.set_xticklabels(metrics)
-        ax1.legend()
-        ax1.grid(axis='y', alpha=0.3)
-
-        for bars in [bars1, bars2]:
-            for bar in bars:
-                h = bar.get_height()
-                ax1.text(bar.get_x() + bar.get_width()/2., h, f'{h:.1f}',
-                        ha='center', va='bottom', fontsize=9)
-
-        improvements = ['Качество', 'RMS', 'Peak']
-        b_imp = [before['quality'], before['rms']*100, before['peak']]
-        a_imp = [after['quality'], after['rms']*100, after['peak']]
-
-        x2 = np.arange(len(improvements))
-        ax2.plot(x2, b_imp, 'o-', color='#ef4444', linewidth=2, markersize=8, label='До')
-        ax2.plot(x2, a_imp, 's-', color='#10b981', linewidth=2, markersize=8, label='После')
-        ax2.set_ylabel('Значение', fontsize=12)
-        ax2.set_title('Динамика улучшений', fontsize=14, fontweight='bold')
-        ax2.set_xticks(x2)
-        ax2.set_xticklabels(improvements)
-        ax2.legend()
-        ax2.grid(True, alpha=0.3)
-
-        plt.tight_layout()
-        buf = io.BytesIO()
-        plt.savefig(buf, format='png', dpi=120, bbox_inches='tight')
-        buf.seek(0)
-        plt.close()
-        return buf
 
     @staticmethod
     def create_spectrum_chart(audio):
@@ -330,6 +309,38 @@ def update_stats(uid, action):
     user_stats[uid]['total'] += 1
     user_stats[uid]['last'] = datetime.now().isoformat()
     user_stats[uid]['actions'][action] = user_stats[uid]['actions'].get(action, 0) + 1
+
+def cleanup_old_user_data():
+    """Очистка неактивных пользователей (> 24 часа)"""
+    try:
+        now = datetime.now()
+        to_delete = []
+
+        for uid, data in user_stats.items():
+            if data.get('last'):
+                last_activity = datetime.fromisoformat(data['last'])
+                if (now - last_activity).total_seconds() > 86400:  # 24 часа
+                    to_delete.append(uid)
+
+        for uid in to_delete:
+            # Удаляем файл если есть
+            if uid in user_data and 'file_path' in user_data[uid]:
+                file_path = user_data[uid]['file_path']
+                if file_path and os.path.exists(file_path):
+                    try:
+                        os.remove(file_path)
+                        logger.info(f'Удален файл неактивного пользователя: {uid}')
+                    except OSError:
+                        pass
+
+            # Удаляем данные
+            user_data.pop(uid, None)
+            user_stats.pop(uid, None)
+
+        if to_delete:
+            logger.info(f'🧹 Очищены данные {len(to_delete)} неактивных пользователей')
+    except Exception as e:
+        logger.error(f'Ошибка очистки user_data: {e}')
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_name = update.message.from_user.first_name or "друг"
@@ -683,7 +694,7 @@ Lossless качество для максимального результата
                     await q.message.reply_text('❌ Ошибка нормализации')
 
             elif act == 'mono_to_stereo':
-                if info['is_mono']:
+                if info.get('is_mono', False):
                     outp = FileManager.get_safe_path(uid, 'out', '.flac')
                     success = FFmpegProcessor.process_audio(inp, outp, 'flac', level=None, normalize=False, mono_to_stereo=True)
                     if success:
@@ -700,8 +711,7 @@ Lossless качество для максимального результата
                     await q.message.reply_text('❌ Неправильный формат команды')
                     return
                 lvl, fmt = parts[1], parts[2]
-                ratio_map = {'light': '1.5:1', 'medium': '2.0:1', 'heavy': '3.0:1'}
-                if lvl not in ratio_map:
+                if lvl not in RATIO_MAP:
                     await q.message.reply_text('❌ Неизвестный уровень компрессии')
                     return
                 outp = FileManager.get_safe_path(uid, 'out', f'.{fmt}')
@@ -709,7 +719,7 @@ Lossless качество для максимального результата
                 if success:
                     with open(outp, 'rb') as f:
                         await q.message.reply_audio(audio=f, filename=os.path.splitext(fname)[0]+f'_[{lvl.upper()}].{fmt}',
-                            caption=f'✅ *Улучшено ({ratio_map[lvl]})*\n\n🎚 Компрессия: {ratio_map[lvl]}\n🔉 Нормализация: -16 LUFS\n💾 Формат: {fmt.upper()}', parse_mode='Markdown')
+                            caption=f'✅ *Улучшено ({RATIO_MAP[lvl]})*\n\n🎚 Компрессия: {RATIO_MAP[lvl]}\n🔉 Нормализация: -16 LUFS\n💾 Формат: {fmt.upper()}', parse_mode='Markdown')
                 else:
                     await q.message.reply_text('❌ Ошибка обработки')
 
@@ -767,9 +777,6 @@ Lossless качество для максимального результата
         if uid not in user_data: user_data[uid] = {}
         user_data[uid]['action'] = act
 
-        format_icons = {'flac': '💎', 'mp3': '🎵', 'ogg': '🎶', 'wav': '📻'}
-        format_names = {'flac': 'FLAC (без потерь)', 'mp3': 'MP3 320kbps', 'ogg': 'OGG Vorbis', 'wav': 'WAV PCM'}
-
         messages = {
             'analyze': '📊 *Детальный анализ*\n\nОтправьте аудиофайл ⬇️',
             'spectrum': '📈 *Частотный спектр*\n\nОтправьте аудиофайл ⬇️',
@@ -779,15 +786,15 @@ Lossless качество для максимального результата
         if act.startswith('enhance_') and len(act.split('_')) == 3:
             level, fmt = act.split('_')[1], act.split('_')[2]
             level_names = {'light': 'Light (1.5:1)', 'medium': 'Medium (2.0:1)', 'heavy': 'Heavy (3.0:1)'}
-            messages[act] = f'✨ *Улучшение: {level_names[level]}*\n\n{format_icons[fmt]} Формат: {format_names[fmt]}\n\nОтправьте аудиофайл ⬇️'
+            messages[act] = f'✨ *Улучшение: {level_names.get(level, level)}*\n\n{FORMAT_ICONS.get(fmt, "💾")} Формат: {FORMAT_NAMES.get(fmt, fmt.upper())}\n\nОтправьте аудиофайл ⬇️'
 
         if act.startswith('normalize_') and act != 'normalize_ask':
             fmt = act.split('_')[1]
-            messages[act] = f'🔊 *Нормализация*\n\n{format_icons[fmt]} Формат: {format_names[fmt]}\n\nОтправьте аудиофайл ⬇️'
+            messages[act] = f'🔊 *Нормализация*\n\n{FORMAT_ICONS.get(fmt, "💾")} Формат: {FORMAT_NAMES.get(fmt, fmt.upper())}\n\nОтправьте аудиофайл ⬇️'
 
         if act.startswith('full_process_') and act != 'full_process_ask':
             fmt = act.split('_')[2]
-            messages[act] = f'🚀 *Полная обработка*\n\n{format_icons[fmt]} Формат: {format_names[fmt]}\n\nОтправьте аудиофайл ⬇️'
+            messages[act] = f'🚀 *Полная обработка*\n\n{FORMAT_ICONS.get(fmt, "💾")} Формат: {FORMAT_NAMES.get(fmt, fmt.upper())}\n\nОтправьте аудиофайл ⬇️'
 
         if act.startswith('convert_'):
             fmt = act.split('_')[1]
