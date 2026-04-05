@@ -24,10 +24,16 @@ services:
       - MAX_FILE_SIZE_MB=${MAX_FILE_SIZE_MB:-20}
       - CLEANUP_INTERVAL_MINUTES=${CLEANUP_INTERVAL_MINUTES:-30}
       - TEMP_FILE_MAX_AGE_HOURS=${TEMP_FILE_MAX_AGE_HOURS:-2}
+      - DOWNLOAD_HOST=${DOWNLOAD_HOST:-your_server_ip}
+      - DOWNLOAD_PORT=${DOWNLOAD_PORT:-8765}
+
+    ports:
+      - "${DOWNLOAD_PORT:-8765}:${DOWNLOAD_PORT:-8765}"
 
     volumes:
       - audio-bot-temp:/app/temp
       - audio-bot-logs:/app/logs
+      - audio-bot-downloads:/app/downloads
 
     healthcheck:
       test: ["CMD-SHELL", "ps aux | grep -q '[p]ython.*bot.py' || exit 1"]
@@ -40,4 +46,6 @@ volumes:
   audio-bot-temp:
     driver: local
   audio-bot-logs:
+    driver: local
+  audio-bot-downloads:
     driver: local

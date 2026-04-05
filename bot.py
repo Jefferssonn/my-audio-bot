@@ -1,5 +1,7 @@
-import os, logging, time, threading, io, signal, subprocess, json
+import os, logging, time, threading, io, signal, subprocess, json, secrets, shutil
 from datetime import datetime
+from http.server import HTTPServer, BaseHTTPRequestHandler
+from urllib.parse import quote
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
 import numpy as np
@@ -18,6 +20,111 @@ TEMP_FILE_MAX_AGE_HOURS = int(os.getenv('TEMP_FILE_MAX_AGE_HOURS', 2))
 
 user_data = {}
 user_stats = {}
+
+# ── Download server ───────────────────────────────────────────────────────────
+DOWNLOAD_DIR  = '/app/downloads'
+DOWNLOAD_HOST = os.getenv('DOWNLOAD_HOST', '94.131.110.90')
+DOWNLOAD_PORT = int(os.getenv('DOWNLOAD_PORT', 8765))
+DOWNLOAD_TTL  = 30 * 60  # 30 минут
+
+_dl_store: dict = {}   # token -> {path, filename, expires, used}
+_dl_lock = threading.Lock()
+
+class _DownloadHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        token = self.path.lstrip('/').split('/')[0].split('?')[0].split('#')[0]
+        with _dl_lock:
+            entry = _dl_store.get(token)
+            if not entry:
+                self.send_response(404); self.end_headers()
+                self.wfile.write(b'Not found'); return
+            if time.time() > entry['expires']:
+                self.send_response(410); self.end_headers()
+                self.wfile.write(b'Link expired')
+                _dl_store.pop(token, None)
+                if os.path.exists(entry['path']): os.remove(entry['path'])
+                return
+            path, filename = entry['path'], entry['filename']
+        try:
+            ext = os.path.splitext(filename)[1].lower().lstrip('.')
+            mime = {'flac': 'audio/flac', 'mp3': 'audio/mpeg', 'ogg': 'audio/ogg',
+                    'wav': 'audio/wav', 'm4a': 'audio/mp4'}.get(ext, 'application/octet-stream')
+            size = os.path.getsize(path)
+            self.send_response(200)
+            self.send_header('Content-Type', mime)
+            encoded_name = quote(filename, safe='')
+            ascii_name = filename.encode('ascii', 'ignore').decode('ascii') or 'audio'
+            self.send_header('Content-Disposition', f'attachment; filename="{ascii_name}"; filename*=UTF-8\'\'{encoded_name}')
+            self.send_header('Content-Length', str(size))
+            self.end_headers()
+            with open(path, 'rb') as f:
+                while chunk := f.read(65536):
+                    self.wfile.write(chunk)
+            # Успешно отдан — удаляем
+            with _dl_lock: _dl_store.pop(token, None)
+            if os.path.exists(path): os.remove(path)
+            logger.info(f'[download] отдан файл {filename} токен {token}')
+        except Exception as e:
+            logger.error(f'[download] ошибка отдачи файла: {e}')
+
+    def log_message(self, fmt, *args): pass  # подавляем стандартный лог
+
+def _cleanup_expired_downloads():
+    while True:
+        time.sleep(60)
+        now = time.time()
+        # Чистим истёкшие токены из store
+        with _dl_lock:
+            expired = [t for t, e in _dl_store.items() if now > e['expires']]
+            for token in expired:
+                entry = _dl_store.pop(token)
+                if os.path.exists(entry['path']):
+                    os.remove(entry['path'])
+                    logger.info(f'[download] истёк токен {token}, файл удалён')
+        # Чистим осиротевшие файлы старше DOWNLOAD_TTL (после рестарта бота)
+        if os.path.exists(DOWNLOAD_DIR):
+            for fname in os.listdir(DOWNLOAD_DIR):
+                fpath = os.path.join(DOWNLOAD_DIR, fname)
+                if os.path.isfile(fpath) and (now - os.path.getmtime(fpath)) > DOWNLOAD_TTL:
+                    os.remove(fpath)
+                    logger.info(f'[download] удалён осиротевший файл {fname}')
+
+def start_download_server():
+    os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+    srv = HTTPServer(('0.0.0.0', DOWNLOAD_PORT), _DownloadHandler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    threading.Thread(target=_cleanup_expired_downloads, daemon=True).start()
+    logger.info(f'📥 Download server запущен на :{DOWNLOAD_PORT}')
+
+def create_download_link(filepath: str, filename: str) -> str:
+    token = secrets.token_urlsafe(20)
+    dest = os.path.join(DOWNLOAD_DIR, token + os.path.splitext(filename)[1])
+    os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+    shutil.move(filepath, dest)
+    with _dl_lock:
+        _dl_store[token] = {'path': dest, 'filename': filename,
+                            'expires': time.time() + DOWNLOAD_TTL}
+    return f'http://{DOWNLOAD_HOST}:{DOWNLOAD_PORT}/{token}/{quote(filename)}'
+
+async def send_audio_or_link(message, filepath: str, filename: str, caption: str, **kwargs):
+    """Отправить аудио. Если файл > 50 МБ — дать ссылку на скачивание."""
+    from telegram.error import NetworkError
+    size_mb = os.path.getsize(filepath) / 1024 / 1024
+    try:
+        with open(filepath, 'rb') as f:
+            await message.reply_audio(audio=f, filename=filename, caption=caption, **kwargs)
+    except NetworkError as e:
+        if '413' in str(e) or 'Too Large' in str(e) or 'Entity' in str(e):
+            link = create_download_link(filepath, filename)
+            await message.reply_text(
+                f'📁 <b>Файл готов</b> — {os.path.splitext(filename)[0]}\n\n'
+                f'Размер {size_mb:.1f} МБ — слишком большой для Telegram.\n\n'
+                f'⬇️ <a href="{link}">Скачать файл</a>\n\n'
+                f'⏳ Ссылка одноразовая, действует 30 минут.',
+                parse_mode='HTML', disable_web_page_preview=True
+            )
+        else:
+            raise
 
 # Константы для форматов
 FORMAT_ICONS = {'flac': '💎', 'mp3': '🎵', 'ogg': '🎶', 'wav': '📻'}
@@ -311,6 +418,68 @@ class FFmpegProcessor:
             logger.error(f'Ошибка конвертации: {e}')
             return False
 
+    @staticmethod
+    async def process_deesser(input_path, output_path, output_format='flac', progress_callback=None, duration=0):
+        """
+        Деэссер через sidechaincompress — убирает резкие сибилянты (с, ш, щ).
+        Схема: разделяем сигнал → high-pass sidechain (>5.5kHz) → сжимаем основной сигнал
+        когда сибилянты превышают порог.
+        """
+        codec_params = {
+            'flac': ['-c:a', 'flac', '-compression_level', '5'],
+            'mp3':  ['-c:a', 'libmp3lame', '-b:a', '320k', '-q:a', '0'],
+            'ogg':  ['-c:a', 'libvorbis', '-qscale:a', '10'],
+            'wav':  ['-c:a', 'pcm_s16le'],
+        }
+        filter_complex = (
+            '[0:a]asplit=2[sc][out];'
+            '[sc]highpass=f=5500[sc1];'
+            '[out][sc1]sidechaincompress=threshold=0.025:ratio=4:attack=1:release=25[a]'
+        )
+        cmd = [
+            'ffmpeg', '-y', '-i', input_path,
+            '-filter_complex', filter_complex,
+            '-map', '[a]',
+            *codec_params.get(output_format, codec_params['flac']),
+            '-ar', '48000',
+            '-progress', 'pipe:1',
+            output_path
+        ]
+        logger.info(f'DeEsser filter_complex: {filter_complex}')
+        try:
+            process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1)
+            last_update = time.time()
+            if process.stdout:
+                for line in process.stdout:
+                    line = line.strip()
+                    if line.startswith('out_time_ms='):
+                        try:
+                            time_ms = int(line.split('=')[1])
+                            current_time = time_ms / 1_000_000
+                            if progress_callback and duration > 0 and (time.time() - last_update) > 2:
+                                progress = min(int((current_time / duration) * 100), 99)
+                                await progress_callback(progress)
+                                last_update = time.time()
+                        except (ValueError, IndexError):
+                            pass
+            return_code = process.wait(timeout=600)
+            if return_code == 0:
+                if progress_callback:
+                    await progress_callback(100)
+                logger.info(f'✓ DeEsser завершён: {output_format}')
+                return True
+            else:
+                stderr = process.stderr.read() if process.stderr else ''
+                logger.error(f'DeEsser FFmpeg ошибка (код {return_code}): {stderr}')
+                return False
+        except subprocess.TimeoutExpired:
+            logger.error('DeEsser timeout (>10 мин)')
+            process.kill()
+            return False
+        except Exception as e:
+            logger.error(f'DeEsser exception: {e}')
+            return False
+
 class AudioProcessor:
     @staticmethod
     def analyze_audio(audio):
@@ -508,25 +677,58 @@ async def execute_audio_action(act, uid, inp, fname, fsize_mb, info, message, pr
 
     try:
         if act == 'analyze':
-            audio = AudioSegment.from_file(inp)
-            s = AudioProcessor.analyze_audio(audio)
-            txt = f'📊 *Детальный анализ*\n\n🎵 Каналы: {"Моно" if s["is_mono"] else "Стерео"}\n📡 Частота: {s["sample_rate"]} Hz\n🎚️ Битность: {s["bit_depth"]} bit\n⏱ Длительность: {s["duration"]:.1f} сек\n📦 Размер: {fsize_mb:.1f} МБ\n\n📈 Качество: {s["quality"]}%\n📊 RMS: {s["rms"]:.3f}\n🔊 Peak: {s["peak"]:.3f}\n🎚 Динамика: {s["dynamic_range"]:.1f} dB\n🔉 Громкость: {s["lufs"]} LUFS'
+            import re
+            # volumedetect — без загрузки в RAM, работает через ffmpeg streaming
+            vol_cmd = ['ffmpeg', '-i', inp, '-af', 'volumedetect', '-f', 'null', '-']
+            vol_result = subprocess.run(vol_cmd, capture_output=True, text=True, timeout=120)
+            mean_match = re.search(r'mean_volume: ([-\d.]+) dB', vol_result.stderr)
+            peak_match = re.search(r'max_volume: ([-\d.]+) dB', vol_result.stderr)
+            mean_db = float(mean_match.group(1)) if mean_match else 0.0
+            peak_db = float(peak_match.group(1)) if peak_match else 0.0
+            dr = round(peak_db - mean_db, 1)
+            lufs = round(mean_db, 1)
+            quality = round(min(100, max(0, (dr / 40) * 100)), 1)
+            channels_str = "Моно" if info.get('is_mono') else "Стерео"
+            txt = (
+                f'📊 *Детальный анализ*\n\n'
+                f'🎵 Каналы: {channels_str}\n'
+                f'📡 Частота: {info["sample_rate"]} Hz\n'
+                f'🎙 Кодек: {info["codec"]}\n'
+                f'⏱ Длительность: {info["duration"]:.1f} сек\n'
+                f'📦 Размер: {fsize_mb:.1f} МБ\n\n'
+                f'📈 Качество: {quality}%\n'
+                f'🔊 Peak: {peak_db:.1f} dB\n'
+                f'📊 Средняя: {mean_db:.1f} dB\n'
+                f'🎚 Динамика: {dr:.1f} dB\n'
+                f'🔉 Громкость: {lufs} LUFS'
+            )
             await message.reply_text(txt, parse_mode='Markdown')
 
         elif act == 'spectrum':
-            audio = AudioSegment.from_file(inp)
+            # Извлекаем только первые 30 сек через ffmpeg pipe — без загрузки всего файла в RAM
+            max_dur = min(info.get('duration', 30), 30)
+            pipe_cmd = [
+                'ffmpeg', '-i', inp, '-t', str(max_dur),
+                '-f', 'wav', '-ar', '44100', '-ac', '1', 'pipe:1'
+            ]
+            pipe_result = subprocess.run(pipe_cmd, capture_output=True, timeout=60)
+            audio = AudioSegment.from_wav(io.BytesIO(pipe_result.stdout))
             spec = AudioProcessor.create_spectrum_chart(audio)
-            s = AudioProcessor.analyze_audio(audio)
-            await message.reply_photo(photo=spec, caption=f'📈 *Спектр*\n\n{s["sample_rate"]} Hz\n{s["dynamic_range"]:.1f} dB', parse_mode='Markdown')
+            dur_str = f'{max_dur:.0f}с' if info.get('duration', 0) > 30 else f'{info["duration"]:.1f}с'
+            note = ' (первые 30с)' if info.get('duration', 0) > 30 else ''
+            await message.reply_photo(
+                photo=spec,
+                caption=f'📈 *Спектр{note}*\n\n{info["sample_rate"]} Hz • {dur_str}',
+                parse_mode='Markdown'
+            )
 
         elif act.startswith('normalize_'):
             fmt = act.split('_')[1]
             outp = FileManager.get_safe_path(uid, 'out', f'.{fmt}')
             success = await FFmpegProcessor.process_audio(inp, outp, fmt, level=None, normalize=True, mono_to_stereo=False, progress_callback=update_progress, duration=duration)
             if success:
-                with open(outp, 'rb') as f:
-                    await message.reply_audio(audio=f, filename=os.path.splitext(fname)[0]+f'_NORM.{fmt}',
-                        caption=f'🔊 *Нормализовано*\n\nЦель: -16 LUFS\n💾 Формат: {fmt.upper()}', parse_mode='Markdown')
+                await send_audio_or_link(message, outp, os.path.splitext(fname)[0]+f'_NORM.{fmt}',
+                    caption=f'🔊 *Нормализовано*\n\nЦель: -16 LUFS\n💾 Формат: {fmt.upper()}', parse_mode='Markdown')
             else:
                 await message.reply_text('❌ Ошибка нормализации')
 
@@ -535,8 +737,7 @@ async def execute_audio_action(act, uid, inp, fname, fsize_mb, info, message, pr
                 outp = FileManager.get_safe_path(uid, 'out', '.flac')
                 success = await FFmpegProcessor.process_audio(inp, outp, 'flac', level=None, normalize=False, mono_to_stereo=True, progress_callback=update_progress, duration=duration)
                 if success:
-                    with open(outp, 'rb') as f:
-                        await message.reply_audio(audio=f, filename=os.path.splitext(fname)[0]+'_STEREO.flac', caption='✅ Моно → Стерео')
+                    await send_audio_or_link(message, outp, os.path.splitext(fname)[0]+'_STEREO.flac', caption='✅ Моно → Стерео')
                 else:
                     await message.reply_text('❌ Ошибка конвертации')
             else:
@@ -554,19 +755,28 @@ async def execute_audio_action(act, uid, inp, fname, fsize_mb, info, message, pr
             outp = FileManager.get_safe_path(uid, 'out', f'.{fmt}')
             success = await FFmpegProcessor.process_audio(inp, outp, fmt, level=lvl, normalize=True, mono_to_stereo=False, progress_callback=update_progress, duration=duration)
             if success:
-                with open(outp, 'rb') as f:
-                    await message.reply_audio(audio=f, filename=os.path.splitext(fname)[0]+f'_[{lvl.upper()}].{fmt}',
-                        caption=f'✅ *Улучшено ({RATIO_MAP[lvl]})*\n\n🎚 Компрессия: {RATIO_MAP[lvl]}\n🔉 Нормализация: -16 LUFS\n💾 Формат: {fmt.upper()}', parse_mode='Markdown')
+                await send_audio_or_link(message, outp, os.path.splitext(fname)[0]+f'_[{lvl.upper()}].{fmt}',
+                    caption=f'✅ *Улучшено ({RATIO_MAP[lvl]})*\n\n🎚 Компрессия: {RATIO_MAP[lvl]}\n🔉 Нормализация: -16 LUFS\n💾 Формат: {fmt.upper()}', parse_mode='Markdown')
             else:
                 await message.reply_text('❌ Ошибка обработки')
+
+        elif act.startswith('deesser_'):
+            fmt = act.split('_')[1]
+            outp = FileManager.get_safe_path(uid, 'out', f'.{fmt}')
+            success = await FFmpegProcessor.process_deesser(inp, outp, fmt, progress_callback=update_progress, duration=duration)
+            if success:
+                await send_audio_or_link(message, outp, os.path.splitext(fname)[0]+f'_DEESS.{fmt}',
+                    caption=f'🎙 *Деэссер применён*\n\nСибилянты подавлены\n💾 Формат: {fmt.upper()}', parse_mode='Markdown')
+            else:
+                await message.reply_text('❌ Ошибка деэссера')
 
         elif act.startswith('convert_'):
             fmt = act.split('_')[1]
             outp = FileManager.get_safe_path(uid, 'out', f'.{fmt}')
             success = await FFmpegProcessor.convert_format(inp, outp, fmt, progress_callback=update_progress, duration=duration)
             if success:
-                with open(outp, 'rb') as f:
-                    await message.reply_audio(audio=f, filename=os.path.splitext(fname)[0]+f'.{fmt}', caption=f'💾 *{fmt.upper()}*', parse_mode='Markdown')
+                await send_audio_or_link(message, outp, os.path.splitext(fname)[0]+f'.{fmt}',
+                    caption=f'💾 *{fmt.upper()}*', parse_mode='Markdown')
             else:
                 await message.reply_text('❌ Ошибка конвертации')
 
@@ -580,10 +790,9 @@ async def execute_audio_action(act, uid, inp, fname, fsize_mb, info, message, pr
             outp = FileManager.get_safe_path(uid, 'out', f'.{fmt}')
             success = await FFmpegProcessor.process_audio(inp, outp, fmt, level='medium', normalize=True, mono_to_stereo=info.get('is_mono', False), progress_callback=update_progress, duration=duration)
             if success:
-                with open(outp, 'rb') as f:
-                    await message.reply_audio(audio=f, filename=os.path.splitext(fname)[0]+f'_[PRO-v2.7.5].{fmt}',
-                        caption=f'✅ *PRO v2.7.5 - FFmpeg Streaming!*\n\n🎵 {"Моно → Стерео" if info.get("is_mono", False) else "Стерео"}\n🎚 Компрессия: 2.0:1\n🔉 Нормализация: -16 LUFS\n💾 Формат: {fmt.upper()}\n⏱ Длина: {dur/60:.1f} мин\n\n⚡ Обработано через FFmpeg streaming',
-                        parse_mode='Markdown', read_timeout=180, write_timeout=180)
+                await send_audio_or_link(message, outp, os.path.splitext(fname)[0]+f'_[PRO-v2.7.5].{fmt}',
+                    caption=f'✅ *PRO v2.7.5 - FFmpeg Streaming!*\n\n🎵 {"Моно → Стерео" if info.get("is_mono", False) else "Стерео"}\n🎚 Компрессия: 2.0:1\n🔉 Нормализация: -16 LUFS\n💾 Формат: {fmt.upper()}\n⏱ Длина: {dur/60:.1f} мин\n\n⚡ Обработано через FFmpeg streaming',
+                    parse_mode='Markdown', read_timeout=180, write_timeout=180)
             else:
                 await message.reply_text('❌ Ошибка обработки')
 
@@ -786,6 +995,29 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text(txt, reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
         return
 
+    # Деэссер
+    if act == 'deesser_ask':
+        txt = '''🎙 *Деэссер*
+
+Убирает резкие сибилянты — "с", "ш", "щ", "ч".
+Идеально для вокала, подкастов, голосовых записей.
+
+💾 *Выберите формат сохранения:*
+
+━━━━━━━━━━━━━━━━━━
+💎 *FLAC* - Без потерь (рекомендуется)
+🎵 *MP3* - 320 kbps
+🎶 *OGG* - Vorbis q10
+📻 *WAV* - PCM
+━━━━━━━━━━━━━━━━━━'''
+        kb = [
+            [InlineKeyboardButton('💎 FLAC ⭐', callback_data='deesser_flac'), InlineKeyboardButton('🎵 MP3', callback_data='deesser_mp3')],
+            [InlineKeyboardButton('🎶 OGG', callback_data='deesser_ogg'), InlineKeyboardButton('📻 WAV', callback_data='deesser_wav')],
+            [InlineKeyboardButton('◀️ Главное меню', callback_data='back_main')]
+        ]
+        await q.edit_message_text(txt, reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
+        return
+
     # Выбор формата для полной обработки
     if act == 'full_process_ask':
         txt = '''🚀 *Полная обработка*
@@ -861,7 +1093,7 @@ Lossless качество для максимального результата
     has_file = uid in user_data and 'file_path' in user_data[uid] and os.path.exists(user_data[uid]['file_path'])
 
     # Определяем является ли действие финальным (не меню)
-    is_final_action = act not in ['enhance_menu', 'convert_menu', 'full_process_ask', 'normalize_ask']
+    is_final_action = act not in ['enhance_menu', 'convert_menu', 'full_process_ask', 'normalize_ask', 'deesser_ask']
 
     if has_file and is_final_action:
         # Обработка сохраненного файла
@@ -930,7 +1162,7 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # Проверка размера файла ДО get_file()
-    TELEGRAM_MAX_FILE_SIZE = 20  # MB
+    TELEGRAM_MAX_FILE_SIZE = MAX_FILE_SIZE_MB
 
     if update.message.audio:
         fname = update.message.audio.file_name or 'audio.mp3'
@@ -969,12 +1201,20 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
             file = await update.message.document.get_file()
     except Exception as e:
         logger.error(f'Ошибка get_file: {e}')
-        await update.message.reply_text(
-            f'❌ *Не удалось получить файл*\n\n'
-            f'Причина: {str(e)}\n\n'
-            f'Размер файла: {fsize_mb:.1f} МБ',
-            parse_mode='Markdown'
-        )
+        if '413' in str(e) or 'Too Large' in str(e) or 'Entity' in str(e):
+            await update.message.reply_text(
+                f'❌ *Файл слишком большой*\n\n'
+                f'Telegram ограничивает загрузку файлов до *50 МБ*.\n'
+                f'Ваш файл: *{fsize_mb:.1f} МБ*\n\n'
+                f'Попробуйте сжать файл или разбить на части.',
+                parse_mode='Markdown'
+            )
+        else:
+            await update.message.reply_text(
+                f'❌ *Не удалось получить файл*\n\n'
+                f'Размер файла: {fsize_mb:.1f} МБ',
+                parse_mode='Markdown'
+            )
         return
 
     await update.message.reply_text(f'⏳ Загрузка ({fsize_mb:.1f} МБ)...')
@@ -1034,6 +1274,7 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 [InlineKeyboardButton('📊 Анализ', callback_data='analyze'), InlineKeyboardButton('📈 Спектр', callback_data='spectrum')],
                 [InlineKeyboardButton('✨ Улучшить звук', callback_data='enhance_menu'), InlineKeyboardButton('🔊 Нормализация', callback_data='normalize_ask')],
                 [InlineKeyboardButton('🎵 Моно→Стерео', callback_data='mono_to_stereo'), InlineKeyboardButton('💾 Конвертер', callback_data='convert_menu')],
+                [InlineKeyboardButton('🎙 Деэссер', callback_data='deesser_ask')],
                 [InlineKeyboardButton('🔄 Загрузить другой файл', callback_data='back_main')]
             ]
             await update.message.reply_text('Выберите ещё действие или загрузите другой файл:', reply_markup=InlineKeyboardMarkup(kb))
@@ -1052,7 +1293,8 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 [InlineKeyboardButton('🚀 Полная обработка', callback_data='full_process_ask')],
                 [InlineKeyboardButton('📊 Анализ', callback_data='analyze'), InlineKeyboardButton('📈 Спектр', callback_data='spectrum')],
                 [InlineKeyboardButton('✨ Улучшить звук', callback_data='enhance_menu'), InlineKeyboardButton('🔊 Нормализация', callback_data='normalize_ask')],
-                [InlineKeyboardButton('🎵 Моно→Стерео', callback_data='mono_to_stereo'), InlineKeyboardButton('💾 Конвертер', callback_data='convert_menu')]
+                [InlineKeyboardButton('🎵 Моно→Стерео', callback_data='mono_to_stereo'), InlineKeyboardButton('💾 Конвертер', callback_data='convert_menu')],
+                [InlineKeyboardButton('🎙 Деэссер', callback_data='deesser_ask')],
             ]
 
             await update.message.reply_text(txt, reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
@@ -1074,6 +1316,7 @@ def main():
     os.makedirs(logs_dir, exist_ok=True)
 
     FileManager.start_cleanup_scheduler()
+    start_download_server()
 
     # Настройка Application
     app = Application.builder().token(BOT_TOKEN).build()
