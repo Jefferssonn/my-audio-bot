@@ -556,6 +556,22 @@ def create_progress_bar(percent):
     bar = '█' * filled + '░' * (10 - filled)
     return f'[{bar}] {percent}%'
 
+def format_duration(seconds: float) -> str:
+    """Форматирует секунды как м:сс (например 3:45)"""
+    s = int(seconds)
+    return f'{s // 60}:{s % 60:02d}'
+
+def main_keyboard():
+    """Стандартная клавиатура главного меню"""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton('🚀 Полная обработка', callback_data='full_process_ask')],
+        [InlineKeyboardButton('📊 Анализ', callback_data='analyze'), InlineKeyboardButton('📈 Спектр', callback_data='spectrum')],
+        [InlineKeyboardButton('✨ Улучшить звук', callback_data='enhance_menu'), InlineKeyboardButton('🔊 Нормализация', callback_data='normalize_ask')],
+        [InlineKeyboardButton('🎙 Деэссер', callback_data='deesser_ask'), InlineKeyboardButton('💾 Конвертер', callback_data='convert_menu')],
+        [InlineKeyboardButton('🎵 Моно→Стерео', callback_data='mono_to_stereo'), InlineKeyboardButton('📚 Помощь', callback_data='help')],
+        [InlineKeyboardButton('📈 Статистика', callback_data='stats')],
+    ])
+
 def update_stats(uid, action):
     if uid not in user_stats: user_stats[uid] = {'total': 0, 'last': None, 'actions': {}}
     user_stats[uid]['total'] += 1
@@ -597,54 +613,43 @@ def cleanup_old_user_data():
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_name = update.message.from_user.first_name or "друг"
 
-    text = f'''
-🎵 *Привет, {user_name}!*
+    text = f'''🎵 *Привет, {user_name}!*
 
-Добро пожаловать в *Telegram Audio Bot PRO v2.7.5* 🎧
-
-━━━━━━━━━━━━━━━━━━━━━━
-✨ *Возможности бота:*
-
-🎚️ *Улучшение аудио*
-• Мягкая компрессия (1.5:1 - 3.0:1)
-• Сохранение динамики
-• Естественный звук
-
-📊 *Анализ*
-• Детальная оценка качества
-• Частотный спектр
-• Графики и визуализация
-
-🔊 *Обработка*
-• Нормализация громкости (-16 LUFS)
-• Моно → Стерео
-• Конвертация форматов
+Добро пожаловать в *Telegram Audio Bot PRO v2.7.6* 🎧
 
 ━━━━━━━━━━━━━━━━━━━━━━
-⚡ *НОВОЕ в v2.7.5:*
-✅ Шкала прогресса в реальном времени! [████░░] 40%
-✅ Улучшенная UX: действие → файл → результат
-✅ FFmpeg streaming - файлы ЛЮБОЙ длины без OOM
-✅ Минимальное потребление RAM
+✨ *Возможности:*
+🎚️ Компрессия (1.5:1 — 3.0:1) с сохранением динамики
+🔊 Нормализация громкости (-16 LUFS)
+🎙 Деэссер — подавление сибилянтов
+📊 Анализ качества и частотный спектр
+💾 Конвертация: FLAC / MP3 / OGG / WAV
+📁 Файлы >50 МБ — ссылка на скачивание (30 мин)
 
 ━━━━━━━━━━━━━━━━━━━━━━
-⚙️ *Настройки:*
-📦 Макс. размер: {MAX_FILE_SIZE_MB} МБ
-🎯 Rate limit: 5 запросов/мин
+⚙️ Макс. размер входящего файла: *{MAX_FILE_SIZE_MB} МБ*
 
-━━━━━━━━━━━━━━━━━━━━━━
 📤 *Отправьте аудиофайл* и выберите действие ⬇️
 '''
 
-    kb = [
-        [InlineKeyboardButton('🚀 Полная обработка', callback_data='full_process_ask')],
-        [InlineKeyboardButton('📊 Анализ', callback_data='analyze'), InlineKeyboardButton('📈 Спектр', callback_data='spectrum')],
-        [InlineKeyboardButton('✨ Улучшить звук', callback_data='enhance_menu'), InlineKeyboardButton('🔊 Нормализация', callback_data='normalize_ask')],
-        [InlineKeyboardButton('🎵 Моно→Стерео', callback_data='mono_to_stereo'), InlineKeyboardButton('💾 Конвертер', callback_data='convert_menu')],
-        [InlineKeyboardButton('📚 Помощь', callback_data='help'), InlineKeyboardButton('📈 Статистика', callback_data='stats')]
-    ]
+    await update.message.reply_text(text, reply_markup=main_keyboard(), parse_mode='Markdown')
 
-    await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.message.from_user.id
+    if uid in user_data:
+        user_data[uid].pop('pending_action', None)
+    await update.message.reply_text('✅ Ожидание отменено.', reply_markup=main_keyboard())
+
+async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.message.from_user.id
+    if uid in user_stats:
+        s = user_stats[uid]
+        txt = f'📈 *Ваша статистика*\n\n📊 Всего обработано: *{s["total"]}* файлов\n⏰ Последнее: {s["last"][:16] if s["last"] else "—"}\n\n🔥 *ТОП-5 операций:*\n'
+        for i, (a, c) in enumerate(sorted(s['actions'].items(), key=lambda x: x[1], reverse=True)[:5], 1):
+            txt += f'{i}. {a}: *{c}* раз\n'
+    else:
+        txt = '📈 *Статистика*\n\nПока нет данных. Отправьте аудиофайл, чтобы начать!'
+    await update.message.reply_text(txt, parse_mode='Markdown')
 
 async def execute_audio_action(act, uid, inp, fname, fsize_mb, info, message, progress_message=None):
     """
@@ -694,7 +699,7 @@ async def execute_audio_action(act, uid, inp, fname, fsize_mb, info, message, pr
                 f'🎵 Каналы: {channels_str}\n'
                 f'📡 Частота: {info["sample_rate"]} Hz\n'
                 f'🎙 Кодек: {info["codec"]}\n'
-                f'⏱ Длительность: {info["duration"]:.1f} сек\n'
+                f'⏱ Длительность: {format_duration(info["duration"])}\n'
                 f'📦 Размер: {fsize_mb:.1f} МБ\n\n'
                 f'📈 Качество: {quality}%\n'
                 f'🔊 Peak: {peak_db:.1f} dB\n'
@@ -790,8 +795,8 @@ async def execute_audio_action(act, uid, inp, fname, fsize_mb, info, message, pr
             outp = FileManager.get_safe_path(uid, 'out', f'.{fmt}')
             success = await FFmpegProcessor.process_audio(inp, outp, fmt, level='medium', normalize=True, mono_to_stereo=info.get('is_mono', False), progress_callback=update_progress, duration=duration)
             if success:
-                await send_audio_or_link(message, outp, os.path.splitext(fname)[0]+f'_[PRO-v2.7.5].{fmt}',
-                    caption=f'✅ *PRO v2.7.5 - FFmpeg Streaming!*\n\n🎵 {"Моно → Стерео" if info.get("is_mono", False) else "Стерео"}\n🎚 Компрессия: 2.0:1\n🔉 Нормализация: -16 LUFS\n💾 Формат: {fmt.upper()}\n⏱ Длина: {dur/60:.1f} мин\n\n⚡ Обработано через FFmpeg streaming',
+                await send_audio_or_link(message, outp, os.path.splitext(fname)[0]+f'_[PRO].{fmt}',
+                    caption=f'✅ *Полная обработка*\n\n🎵 {"Моно → Стерео" if info.get("is_mono", False) else "Стерео"}\n🎚 Компрессия: 2.0:1\n🔉 Нормализация: -16 LUFS\n💾 Формат: {fmt.upper()}\n⏱ Длина: {format_duration(dur)}',
                     parse_mode='Markdown', read_timeout=180, write_timeout=180)
             else:
                 await message.reply_text('❌ Ошибка обработки')
@@ -843,66 +848,38 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if act == 'help':
-        txt = '''📚 *Справка по боту v2.7.5*
+        txt = '''📚 *Справка по боту v2.7.6*
 
 ━━━━━━━━━━━━━━━━━━
-🎯 *ОСНОВНЫЕ ФУНКЦИИ:*
-
 🚀 *Полная обработка*
-Автоматически применяет все улучшения:
-• Конвертация моно → стерео
-• Мягкая компрессия (2.0:1)
-• Нормализация громкости (-16 LUFS)
-• Экспорт в выбранный формат
+Моно→Стерео + компрессия 2.0:1 + нормализация -16 LUFS
 
 📊 *Анализ*
-Детальная информация о файле:
-• Частота дискретизации
-• Динамический диапазон
-• Уровень громкости (LUFS)
-• Качество звука
+Частота, динамический диапазон, LUFS, качество
 
 📈 *Спектр*
-Визуализация:
-• Форма волны
-• Частотный спектр
+Форма волны + частотный спектр (FFT)
 
 ━━━━━━━━━━━━━━━━━━
-✨ *УЛУЧШЕНИЕ ЗВУКА:*
-
-🔹 *Light* (1.5:1)
-Самая мягкая компрессия для музыки с высокой динамикой
-
-🔸 *Medium* (2.0:1) ⭐
-Рекомендуется для большинства случаев
-
-🔶 *Heavy* (3.0:1)
-Для подкастов и голосовых записей
+✨ *Улучшение звука:*
+🔹 *Light* (1.5:1) — классика, джаз, широкая динамика
+🔸 *Medium* (2.0:1) ⭐ — рекомендуется для большинства
+🔶 *Heavy* (3.0:1) — подкасты, голос, речь
 
 ━━━━━━━━━━━━━━━━━━
-🔊 *Нормализация*
-Точная настройка громкости до -16 LUFS (стандарт стриминга)
+🔊 *Нормализация* — -16 LUFS (стандарт стриминга)
 
-🎵 *Моно → Стерео*
-Преобразование моно-записи в стерео
+🎙 *Деэссер* — убирает резкие "с", "ш", "щ" без потери тембра
 
-💾 *Конвертер*
-• FLAC - без потерь
-• MP3 - 320 kbps
-• OGG - q10
-• WAV - PCM
+🎵 *Моно → Стерео* — конвертация моно в стерео
+
+💾 *Конвертер* — FLAC / MP3 320k / OGG q10 / WAV
+
+📁 *Файлы >50 МБ* — автоматическая ссылка на скачивание (30 мин)
 
 ━━━━━━━━━━━━━━━━━━
-⚡ *НОВОЕ в v2.7.5:*
-
-✅ Шкала прогресса в реальном времени [████░░] 40%
-✅ Улучшенная UX: действие → файл → мгновенный результат
-✅ FFmpeg streaming - файлы ЛЮБОЙ длины (без OOM)
-✅ Минимальное потребление RAM
-✅ Профессиональные фильтры loudnorm+acompressor
-✅ Автоочистка временных файлов
-✅ Rate limiting: 5 req/min
-
+⚙️ */cancel* — сбросить ожидание файла
+⚙️ */stats* — ваша статистика
 ━━━━━━━━━━━━━━━━━━'''
 
         kb = [[InlineKeyboardButton('◀️ Главное меню', callback_data='back_main')]]
@@ -1072,21 +1049,19 @@ Lossless качество для максимального результата
         return
 
     if act == 'back_main':
-        user_name = q.from_user.first_name or "друг"
-        txt = f'''🎵 *Главное меню*
-
-Привет, {user_name}! 👋
-
-📤 Отправьте аудиофайл и выберите действие:
-'''
-        kb = [
-            [InlineKeyboardButton('🚀 Полная обработка', callback_data='full_process_ask')],
-            [InlineKeyboardButton('📊 Анализ', callback_data='analyze'), InlineKeyboardButton('📈 Спектр', callback_data='spectrum')],
-            [InlineKeyboardButton('✨ Улучшить звук', callback_data='enhance_menu'), InlineKeyboardButton('🔊 Нормализация', callback_data='normalize_ask')],
-            [InlineKeyboardButton('🎵 Моно→Стерео', callback_data='mono_to_stereo'), InlineKeyboardButton('💾 Конвертер', callback_data='convert_menu')],
-            [InlineKeyboardButton('📚 Помощь', callback_data='help'), InlineKeyboardButton('📈 Статистика', callback_data='stats')]
-        ]
-        await q.edit_message_text(txt, reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
+        has_file = uid in user_data and 'file_path' in user_data[uid] and os.path.exists(user_data[uid]['file_path'])
+        if has_file:
+            d = user_data[uid]
+            ch_str = 'Моно' if d['file_info']['is_mono'] else 'Стерео'
+            dur_str = format_duration(d['file_info']['duration'])
+            txt = (f'🎵 *Главное меню*\n\n'
+                   f'📄 *{d["file_name"]}*\n'
+                   f'{d["file_size_mb"]:.1f} МБ • {dur_str} • {ch_str}\n\n'
+                   f'Выберите действие:')
+        else:
+            user_name = q.from_user.first_name or 'друг'
+            txt = f'🎵 *Главное меню*\n\nПривет, {user_name}! 👋\n\n📤 Отправьте аудиофайл и выберите действие:'
+        await q.edit_message_text(txt, reply_markup=main_keyboard(), parse_mode='Markdown')
         return
 
     # Проверяем есть ли сохраненный файл
@@ -1111,14 +1086,7 @@ Lossless качество для максимального результата
         await execute_audio_action(act, uid, inp, fname, fsize_mb, info, q.message, progress_message=progress_msg)
 
         # Показываем меню снова
-        kb = [
-            [InlineKeyboardButton('🚀 Полная обработка', callback_data='full_process_ask')],
-            [InlineKeyboardButton('📊 Анализ', callback_data='analyze'), InlineKeyboardButton('📈 Спектр', callback_data='spectrum')],
-            [InlineKeyboardButton('✨ Улучшить звук', callback_data='enhance_menu'), InlineKeyboardButton('🔊 Нормализация', callback_data='normalize_ask')],
-            [InlineKeyboardButton('🎵 Моно→Стерео', callback_data='mono_to_stereo'), InlineKeyboardButton('💾 Конвертер', callback_data='convert_menu')],
-            [InlineKeyboardButton('🔄 Загрузить другой файл', callback_data='back_main')]
-        ]
-        await q.message.reply_text('Выберите ещё действие или загрузите другой файл:', reply_markup=InlineKeyboardMarkup(kb))
+        await q.message.reply_text('Выберите следующее действие:', reply_markup=main_keyboard())
 
     else:
         # Нет файла - показываем сообщение о загрузке
@@ -1158,7 +1126,10 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not rate_limiter.is_allowed(uid):
         wt = int(rate_limiter.get_wait_time(uid))
-        await update.message.reply_text(f'⏱️ Подождите {wt} сек')
+        await update.message.reply_text(
+            f'⏱ *Слишком много запросов*\n\nПодождите {wt} сек и отправьте файл снова.',
+            parse_mode='Markdown'
+        )
         return
 
     # Проверка размера файла ДО get_file()
@@ -1268,36 +1239,16 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Выполняем обработку с прогрессом
             await execute_audio_action(pending_act, uid, inp, fname, fsize_mb, info, update.message, progress_message=progress_msg)
 
-            # Показываем меню для следующих действий
-            kb = [
-                [InlineKeyboardButton('🚀 Полная обработка', callback_data='full_process_ask')],
-                [InlineKeyboardButton('📊 Анализ', callback_data='analyze'), InlineKeyboardButton('📈 Спектр', callback_data='spectrum')],
-                [InlineKeyboardButton('✨ Улучшить звук', callback_data='enhance_menu'), InlineKeyboardButton('🔊 Нормализация', callback_data='normalize_ask')],
-                [InlineKeyboardButton('🎵 Моно→Стерео', callback_data='mono_to_stereo'), InlineKeyboardButton('💾 Конвертер', callback_data='convert_menu')],
-                [InlineKeyboardButton('🎙 Деэссер', callback_data='deesser_ask')],
-                [InlineKeyboardButton('🔄 Загрузить другой файл', callback_data='back_main')]
-            ]
-            await update.message.reply_text('Выберите ещё действие или загрузите другой файл:', reply_markup=InlineKeyboardMarkup(kb))
+            await update.message.reply_text('Выберите следующее действие:', reply_markup=main_keyboard())
         else:
             # Нет отложенного действия - показываем меню выбора
-            txt = f'''✅ *Файл загружен!*
-
-📄 Имя: {fname}
-📦 Размер: {fsize_mb:.1f} МБ
-⏱ Длина: {dur/60:.1f} мин
-🎵 {"Моно" if info["is_mono"] else "Стерео"} • {info["sample_rate"]} Hz
-
-Выберите действие:'''
-
-            kb = [
-                [InlineKeyboardButton('🚀 Полная обработка', callback_data='full_process_ask')],
-                [InlineKeyboardButton('📊 Анализ', callback_data='analyze'), InlineKeyboardButton('📈 Спектр', callback_data='spectrum')],
-                [InlineKeyboardButton('✨ Улучшить звук', callback_data='enhance_menu'), InlineKeyboardButton('🔊 Нормализация', callback_data='normalize_ask')],
-                [InlineKeyboardButton('🎵 Моно→Стерео', callback_data='mono_to_stereo'), InlineKeyboardButton('💾 Конвертер', callback_data='convert_menu')],
-                [InlineKeyboardButton('🎙 Деэссер', callback_data='deesser_ask')],
-            ]
-
-            await update.message.reply_text(txt, reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
+            ch_str = 'Моно' if info['is_mono'] else 'Стерео'
+            dur_str = format_duration(dur)
+            txt = (f'✅ *Файл загружен!*\n\n'
+                   f'📄 {fname}\n'
+                   f'📦 {fsize_mb:.1f} МБ • ⏱ {dur_str} • 🎵 {ch_str} • {info["sample_rate"]} Hz\n\n'
+                   f'Выберите действие:')
+            await update.message.reply_text(txt, reply_markup=main_keyboard(), parse_mode='Markdown')
 
     except Exception as e:
         logger.error(f'❌ Ошибка загрузки: {e}', exc_info=True)
@@ -1322,13 +1273,15 @@ def main():
     app = Application.builder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler('start', start))
+    app.add_handler(CommandHandler('cancel', cancel))
+    app.add_handler(CommandHandler('stats', stats_command))
     app.add_handler(CallbackQueryHandler(button_callback))
     app.add_handler(MessageHandler(filters.AUDIO | filters.VOICE | filters.Document.AUDIO, handle_audio))
 
     logger.info('='*50)
-    logger.info('🚀 Telegram Audio Bot PRO v2.7.5')
+    logger.info('🚀 Telegram Audio Bot PRO v2.7.6')
     logger.info('='*50)
-    logger.info('✨ Версия: 2.7 (FFmpeg Streaming)')
+    logger.info('✨ Версия: 2.7.6 (UX improvements)')
     logger.info(f'📦 Макс. размер файла: {MAX_FILE_SIZE_MB} МБ')
     logger.info(f'🧹 Автоочистка: каждые {CLEANUP_INTERVAL_MINUTES} мин')
     logger.info(f'⏰ Макс. возраст файлов: {TEMP_FILE_MAX_AGE_HOURS} ч')
